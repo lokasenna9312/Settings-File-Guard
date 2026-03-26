@@ -42,6 +42,24 @@ namespace Settings_File_Guard
                         return;
                     }
 
+                    if (IsSignificantlyWeakerThanReference(currentAnalysis, bestHealthyBackup))
+                    {
+                        Mod.log.Warn(
+                            "[KEYBIND_BACKUP] Skipped backup because current Settings.coc is materially weaker than the strongest healthy backup. " +
+                            $"reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "BACKUP",
+                            $"backup-skip-weaker-current-{reason}",
+                            GuardPaths.SettingsFilePath,
+                            currentAnalysis.Describe());
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "BACKUP",
+                            $"backup-skip-weaker-reference-{reason}",
+                            bestHealthyBackup.FilePath,
+                            bestHealthyBackup.Describe());
+                        return;
+                    }
+
                     Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
                     File.Copy(GuardPaths.SettingsFilePath, BackupFilePath, overwrite: true);
 
@@ -120,11 +138,11 @@ namespace Settings_File_Guard
 
                     if (currentAnalysis.LooksHealthy)
                     {
-                        if (LooksSuspiciousComparedToHealthyBackup(currentAnalysis, bestHealthyBackup))
+                        if (ShouldRestoreOverStructurallyHealthyCurrent(currentAnalysis, bestHealthyBackup))
                         {
                             Mod.log.Warn(
-                                "[KEYBIND_BACKUP] Current Settings.coc passed baseline health checks but looks suspicious " +
-                                $"compared to the strongest healthy backup. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
+                                "[KEYBIND_BACKUP] Current Settings.coc passed baseline health checks but is materially weaker " +
+                                $"than the strongest healthy backup. Restoring stronger backup. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
                             GuardDiagnostics.DumpFileSnapshot(
                                 "RESTORE",
                                 $"restore-suspicious-current-{reason}",
@@ -140,9 +158,11 @@ namespace Settings_File_Guard
                         {
                             Mod.log.Info(
                                 $"[KEYBIND_BACKUP] Current Settings.coc passed validation. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.DescribeCompact()}");
+                            GuardDiagnostics.WriteEvent(
+                                "RESTORE",
+                                $"Restore skipped because current Settings.coc looks healthy enough. reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.DescribeCompact()}");
+                            return;
                         }
-
-                        return;
                     }
 
                     Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
@@ -212,6 +232,7 @@ namespace Settings_File_Guard
                 analysis.DeviceCount = CountOccurrences(text, "\"m_Device\"");
                 analysis.BindingPathCount = CountOccurrences(text, "\"m_Path\"");
                 analysis.ModifierCount = CountOccurrences(text, "\"m_Modifiers\"");
+                analysis.SectionHeaderCount = CountSettingsSectionHeaders(text);
             }
             catch (Exception ex)
             {
@@ -304,19 +325,36 @@ namespace Settings_File_Guard
             return candidate.LastWriteTimeUtc > currentBest.LastWriteTimeUtc;
         }
 
-        private static bool LooksSuspiciousComparedToHealthyBackup(
+        private static bool ShouldRestoreOverStructurallyHealthyCurrent(
             SettingsFileAnalysis currentAnalysis,
             SettingsFileAnalysis healthyReference)
         {
-            return currentAnalysis != null &&
-                   healthyReference != null &&
-                   currentAnalysis.LooksHealthy &&
-                   healthyReference.LooksHealthy &&
-                   healthyReference.BindingMapCount > 0 &&
-                   currentAnalysis.BindingMapCount == 0 &&
-                   currentAnalysis.ActionNameCount == 0 &&
-                   currentAnalysis.BindingPathCount == 0 &&
-                   currentAnalysis.Length * 2 < healthyReference.Length;
+            return IsSignificantlyWeakerThanReference(currentAnalysis, healthyReference);
+        }
+
+        private static bool IsSignificantlyWeakerThanReference(
+            SettingsFileAnalysis candidate,
+            SettingsFileAnalysis reference)
+        {
+            if (candidate == null ||
+                reference == null ||
+                !candidate.LooksHealthy ||
+                !reference.LooksHealthy ||
+                string.Equals(candidate.FilePath, reference.FilePath, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            bool substantiallyLowerScore = candidate.StrengthScore * 100 < reference.StrengthScore * 80;
+            bool materiallySmallerFile = candidate.Length * 100 < reference.Length * 85;
+            bool materiallyFewerSections = candidate.SectionHeaderCount + 1 < reference.SectionHeaderCount;
+            bool farFewerBindings =
+                reference.BindingMapCount >= 4 &&
+                candidate.BindingMapCount * 2 < reference.BindingMapCount;
+
+            return substantiallyLowerScore ||
+                   (materiallySmallerFile && materiallyFewerSections) ||
+                   (materiallySmallerFile && farFewerBindings);
         }
 
         private static void PruneHealthySnapshots()
@@ -400,6 +438,30 @@ namespace Settings_File_Guard
             return count;
         }
 
+        private static int CountSettingsSectionHeaders(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return 0;
+            }
+
+            int count = 0;
+            using (StringReader reader = new StringReader(text))
+            {
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    line = line.Trim();
+                    if (line.Length > 0 && line.EndsWith(" Settings", StringComparison.Ordinal))
+                    {
+                        count += 1;
+                    }
+                }
+            }
+
+            return count;
+        }
+
         private static void SafeCopyWithRetries(string sourcePath, string destinationPath, bool overwrite)
         {
             const int maxAttempts = 5;
@@ -455,6 +517,8 @@ namespace Settings_File_Guard
 
             public int ModifierCount { get; set; }
 
+            public int SectionHeaderCount { get; set; }
+
             public bool LooksHealthy =>
                 Exists &&
                 string.IsNullOrEmpty(ReadFailure) &&
@@ -494,6 +558,7 @@ namespace Settings_File_Guard
                     score += Math.Min(DeviceCount, 100) * 10;
                     score += Math.Min(BindingPathCount, 100) * 10;
                     score += Math.Min(ModifierCount, 100) * 5;
+                    score += Math.Min(SectionHeaderCount, 50) * 80;
                     score += (int)Math.Min(Length / 64L, 500L);
                     return score;
                 }
@@ -504,14 +569,14 @@ namespace Settings_File_Guard
                 return
                     $"file={FilePath}, exists={Exists}, length={Length}, general={HasGeneralSettings}, graphics={HasGraphicsSettings}, " +
                     $"keybindingSection={HasKeybindingSettingsSection}, bindingsProperty={HasBindingsProperty}, bindingMaps={BindingMapCount}, " +
-                    $"actions={ActionNameCount}, devices={DeviceCount}, bindingPaths={BindingPathCount}, modifiers={ModifierCount}, " +
+                    $"actions={ActionNameCount}, devices={DeviceCount}, bindingPaths={BindingPathCount}, modifiers={ModifierCount}, sections={SectionHeaderCount}, " +
                     $"healthy={LooksHealthy}, score={StrengthScore}, reason={GetHealthReason()}, lastWriteUtc={LastWriteTimeUtc:O}";
             }
 
             public string DescribeCompact()
             {
                 return
-                    $"{Path.GetFileName(FilePath)}(healthy={LooksHealthy}, len={Length}, maps={BindingMapCount}, actions={ActionNameCount}, " +
+                    $"{Path.GetFileName(FilePath)}(healthy={LooksHealthy}, len={Length}, sections={SectionHeaderCount}, maps={BindingMapCount}, actions={ActionNameCount}, " +
                     $"score={StrengthScore}, reason={GetHealthReason()})";
             }
 
