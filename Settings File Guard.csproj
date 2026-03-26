@@ -1,0 +1,109 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<NeedBuild Condition="'$(NeedBuild)' == ''">true</NeedBuild>
+		<EnableGeneratedModJson Condition="'$(EnableGeneratedModJson)' == ''">false</EnableGeneratedModJson>
+	</PropertyGroup>
+
+	<PropertyGroup>
+		<Configurations>Debug;Release</Configurations>
+		<TargetFramework>net48</TargetFramework>
+		<RootNamespace>Settings_File_Guard</RootNamespace>
+		<AssemblyName>Settings File Guard</AssemblyName>
+		<EnableCsiiPostProcessor Condition="'$(EnableCsiiPostProcessor)' == ''">false</EnableCsiiPostProcessor>
+		<PublishConfigurationPath>Properties\PublishConfiguration.xml</PublishConfigurationPath>
+		<CsiiToolPath>$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH'))</CsiiToolPath>
+		<CsiiToolPath Condition="'$(CsiiToolPath)' == ''">$([System.Environment]::GetEnvironmentVariable('CSII_TOOLPATH', 'EnvironmentVariableTarget.User'))</CsiiToolPath>
+		<ModPropsFile>$(CsiiToolPath)\Mod.props</ModPropsFile>
+		<ModTargetsFile>$(CsiiToolPath)\Mod.targets</ModTargetsFile>
+		<PDXAccountDataPath>$(MSBuildProjectDirectory)\.local\pdx_account.txt</PDXAccountDataPath>
+	</PropertyGroup>
+
+	<Import Project="$(ModPropsFile)" Condition="Exists('$(ModPropsFile)')" />
+	<Import Project="$(ModTargetsFile)" Condition="Exists('$(ModTargetsFile)')" />
+
+	<ItemGroup>
+		<Reference Include="Game">
+			<HintPath>C:\Program Files (x86)\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed\Game.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Colossal.Core">
+			<HintPath>C:\Program Files (x86)\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed\Colossal.Core.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="Colossal.Logging">
+			<HintPath>C:\Program Files (x86)\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed\Colossal.Logging.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+		<Reference Include="UnityEngine.CoreModule">
+			<HintPath>C:\Program Files (x86)\Steam\steamapps\common\Cities Skylines II\Cities2_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
+	</ItemGroup>
+
+	<ItemGroup>
+		<None Include="$(ModPropsFile)" Link="Properties\Mod.props" />
+		<None Include="$(ModTargetsFile)" Link="Properties\Mod.targets" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Lib.Harmony" Version="2.4.2" />
+	</ItemGroup>
+
+	<ItemGroup Condition="!Exists('$(EntityPackagePath)')">
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.SystemAPI.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.SystemAPI.QueryBuilder.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.LambdaJobs.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.Common.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.SystemAPI.Query.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\SystemGenerator.EntityQueryBulkOperations.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\AspectGenerator.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\Common.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\JobEntityGenerator.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\Unity.Entities.Analyzer.dll" />
+		<Analyzer Remove="$(EntityPackagePath)\Unity.Entities.Analyzer.CodeFixes.dll" />
+	</ItemGroup>
+
+	<Target Name="CheckEntityPackagePath" Condition="Exists('$(EntityPackagePath)')" />
+
+	<Target Name="PrepareLegacyModMetadata" BeforeTargets="DeployWIP" Condition="'$(NeedBuild)'">
+		<Delete Files="$(OutDir)mod.json" />
+		<Copy SourceFiles="$(MSBuildProjectDirectory)\Properties\PublishConfiguration.xml" DestinationFiles="$(OutDir)PublishConfiguration.xml" SkipUnchangedFiles="true" />
+	</Target>
+
+	<Target Name="GenerateModJson" AfterTargets="AfterBuild" Condition="'$(NeedBuild)' and '$(EnableGeneratedModJson)' == 'true'">
+		<PropertyGroup>
+			<PublishConfigurationFullPathForBuild Condition="'$(PublishConfigurationPath)' != ''">$([System.IO.Path]::GetFullPath('$(PublishConfigurationPath)'))</PublishConfigurationFullPathForBuild>
+			<PublishConfigurationFullPathForBuild Condition="'$(PublishConfigurationPath)' == ''">$([System.IO.Path]::GetFullPath('Properties\PublishConfiguration.xml'))</PublishConfigurationFullPathForBuild>
+			<ModJsonOutputPath>$(OutDir)mod.json</ModJsonOutputPath>
+		</PropertyGroup>
+
+		<XmlPeek XmlInputPath="$(PublishConfigurationFullPathForBuild)" Query="/Publish/ModId/@Value">
+			<Output TaskParameter="Result" PropertyName="ModJsonId" />
+		</XmlPeek>
+		<XmlPeek XmlInputPath="$(PublishConfigurationFullPathForBuild)" Query="/Publish/ModVersion/@Value">
+			<Output TaskParameter="Result" PropertyName="ModJsonVersion" />
+		</XmlPeek>
+		<XmlPeek XmlInputPath="$(PublishConfigurationFullPathForBuild)" Query="/Publish/DisplayName/@Value">
+			<Output TaskParameter="Result" PropertyName="ModJsonName" />
+		</XmlPeek>
+		<XmlPeek XmlInputPath="$(PublishConfigurationFullPathForBuild)" Query="/Publish/ShortDescription/@Value">
+			<Output TaskParameter="Result" PropertyName="ModJsonDescription" />
+		</XmlPeek>
+
+		<ItemGroup>
+			<ModJsonLines Include="{" />
+			<ModJsonLines Include="    &quot;id&quot;: &quot;$(ModJsonId)&quot;," />
+			<ModJsonLines Include="    &quot;name&quot;: &quot;$(ModJsonName)&quot;," />
+			<ModJsonLines Include="    &quot;author&quot;: &quot;Pectus Solentis&quot;," />
+			<ModJsonLines Include="    &quot;version&quot;: &quot;$(ModJsonVersion)&quot;," />
+			<ModJsonLines Include="    &quot;description&quot;: &quot;$(ModJsonDescription)&quot;," />
+			<ModJsonLines Include="    &quot;entryPoint&quot;: &quot;Settings_File_Guard.Mod&quot;," />
+			<ModJsonLines Include="    &quot;dll&quot;: &quot;Settings File Guard.dll&quot;," />
+			<ModJsonLines Include="    &quot;dependencies&quot;: []" />
+			<ModJsonLines Include="}" />
+		</ItemGroup>
+
+		<WriteLinesToFile File="$(ModJsonOutputPath)" Lines="@(ModJsonLines)" Overwrite="true" />
+	</Target>
+</Project>

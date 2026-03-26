@@ -1,0 +1,33 @@
+<Publish>
+	<ModId Value="" />
+	<DisplayName Value="Settings File Guard" />
+	<ShortDescription Value="Standalone utility mod that protects Settings.coc from keybinding-save corruption and restores a healthy backup when needed." />
+	<LongDescription>
+Standalone utility mod for Cities: Skylines II.
+
+- Suppresses the known `KeybindingSettings.bindings` save failure during global settings save.
+- Keeps a backup of a healthy `Settings.coc`.
+- Restores the backup when the current settings file looks corrupted or loses keybindings.
+- Does not protect sessions where all code mods are disabled.
+
+Files:
+- Backup: `Settings.coc.settings_file_guard.bak`
+- Corrupt snapshot: `Settings.coc.settings_guard.corrupt.*.bak`
+
+이 모드는 시티즈: 스카이라인 2의 전역 설정 파일 보호용 독립 모드입니다.
+
+- 전역 설정 저장 중 알려진 `KeybindingSettings.bindings` 예외를 우회합니다.
+- 건강한 `Settings.coc`를 백업합니다.
+- 현재 설정 파일이 손상되었거나 키바인딩이 비어 있으면 백업본으로 복원합니다.
+- 모든 코드 모드를 끈 상태까지 보호해주지는 못합니다.
+	</LongDescription>
+	<ModVersion Value="1.0.0" />
+	<GameVersion Value="1.5.6f1" />
+	<ChangeLog>
+- First public release of Settings File Guard.
+- Added keybinding-save failure suppression during global settings save.
+- Added healthy Settings.coc backup and restore flow.
+- Empty bindings arrays are treated as corrupted and are not used as healthy backup seeds.
+	</ChangeLog>
+	<AccessLevel Value="Public" />
+</Publish>
