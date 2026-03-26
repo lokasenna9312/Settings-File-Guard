@@ -138,21 +138,25 @@ namespace Settings_File_Guard
 
                     if (currentAnalysis.LooksHealthy)
                     {
-                        if (ShouldRestoreOverStructurallyHealthyCurrent(currentAnalysis, bestHealthyBackup))
+                        if (IsSignificantlyWeakerThanReference(currentAnalysis, bestHealthyBackup))
                         {
                             Mod.log.Warn(
                                 "[KEYBIND_BACKUP] Current Settings.coc passed baseline health checks but is materially weaker " +
-                                $"than the strongest healthy backup. Restoring stronger backup. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
+                                $"than the strongest healthy backup. Conservative mode preserved the current file. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
                             GuardDiagnostics.DumpFileSnapshot(
                                 "RESTORE",
-                                $"restore-suspicious-current-{reason}",
+                                $"restore-conservative-skip-current-{reason}",
                                 GuardPaths.SettingsFilePath,
                                 currentAnalysis.Describe());
                             GuardDiagnostics.DumpFileSnapshot(
                                 "RESTORE",
-                                $"restore-suspicious-reference-{reason}",
+                                $"restore-conservative-skip-reference-{reason}",
                                 bestHealthyBackup.FilePath,
                                 bestHealthyBackup.Describe());
+                            GuardDiagnostics.WriteEvent(
+                                "RESTORE",
+                                "Conservative restore skip: current Settings.coc is weaker than the strongest healthy backup " +
+                                $"but still structurally healthy. reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
                         }
                         else
                         {
@@ -161,8 +165,31 @@ namespace Settings_File_Guard
                             GuardDiagnostics.WriteEvent(
                                 "RESTORE",
                                 $"Restore skipped because current Settings.coc looks healthy enough. reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.DescribeCompact()}");
-                            return;
                         }
+
+                        return;
+                    }
+
+                    if (!currentAnalysis.HasHardRestoreFailure)
+                    {
+                        Mod.log.Warn(
+                            "[KEYBIND_BACKUP] Current Settings.coc failed baseline health checks but did not meet the hard-restore threshold. " +
+                            $"Conservative mode preserved the current file. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "RESTORE",
+                            $"restore-conservative-preserve-current-{reason}",
+                            GuardPaths.SettingsFilePath,
+                            currentAnalysis.Describe());
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "RESTORE",
+                            $"restore-conservative-preserve-reference-{reason}",
+                            bestHealthyBackup.FilePath,
+                            bestHealthyBackup.Describe());
+                        GuardDiagnostics.WriteEvent(
+                            "RESTORE",
+                            "Conservative restore skip: current Settings.coc is suspicious or incomplete but did not meet the hard-restore threshold. " +
+                            $"reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
+                        return;
                     }
 
                     Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
@@ -323,13 +350,6 @@ namespace Settings_File_Guard
             }
 
             return candidate.LastWriteTimeUtc > currentBest.LastWriteTimeUtc;
-        }
-
-        private static bool ShouldRestoreOverStructurallyHealthyCurrent(
-            SettingsFileAnalysis currentAnalysis,
-            SettingsFileAnalysis healthyReference)
-        {
-            return IsSignificantlyWeakerThanReference(currentAnalysis, healthyReference);
         }
 
         private static bool IsSignificantlyWeakerThanReference(
@@ -527,6 +547,13 @@ namespace Settings_File_Guard
                 HasGraphicsSettings &&
                 HasKeybindingSettingsSection &&
                 HasBindingsProperty;
+
+            public bool HasHardRestoreFailure =>
+                !Exists ||
+                !string.IsNullOrEmpty(ReadFailure) ||
+                Length < MinimumHealthyFileLengthBytes ||
+                !HasKeybindingSettingsSection ||
+                !HasBindingsProperty;
 
             public int StrengthScore
             {

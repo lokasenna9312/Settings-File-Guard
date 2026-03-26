@@ -1,3 +1,5 @@
+using System.IO;
+using System.Reflection;
 using Colossal.Logging;
 using Game;
 using Game.Modding;
@@ -13,6 +15,7 @@ namespace Settings_File_Guard
         {
             GuardDiagnostics.Initialize();
             log.Info(nameof(OnLoad));
+            LogLoadedBuildIdentity();
             GuardDiagnostics.WriteEvent("LIFECYCLE", "OnLoad start.");
             GuardDiagnostics.DumpFileSnapshot(
                 "LIFECYCLE",
@@ -48,6 +51,28 @@ namespace Settings_File_Guard
                 GuardPaths.SettingsFilePath,
                 "Captured at mod OnDispose after pre-dispose backup.");
             log.Info("[KEYBIND_GUARD] Leaving guard patches applied until process exit to protect async settings-save after OnDispose.");
+        }
+
+        private static void LogLoadedBuildIdentity()
+        {
+            Assembly assembly = typeof(Mod).Assembly;
+            string assemblyPath = assembly.Location;
+            string assemblyLength = "unknown";
+            string assemblyLastWriteUtc = "unknown";
+
+            if (!string.IsNullOrWhiteSpace(assemblyPath) && File.Exists(assemblyPath))
+            {
+                FileInfo info = new FileInfo(assemblyPath);
+                assemblyLength = info.Length.ToString();
+                assemblyLastWriteUtc = info.LastWriteTimeUtc.ToString("O");
+            }
+
+            string message =
+                "[KEYBIND_DIAGNOSTICS] Loaded build identity. " +
+                $"assemblyPath={assemblyPath ?? "unknown"}, assemblyLength={assemblyLength}, assemblyLastWriteUtc={assemblyLastWriteUtc}, deepDiagnostics={GuardDiagnostics.IsEnabled}";
+
+            log.Info(message);
+            GuardDiagnostics.WriteEvent("SYSTEM", message);
         }
     }
 }
