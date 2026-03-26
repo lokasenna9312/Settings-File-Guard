@@ -8,7 +8,9 @@ namespace Settings_File_Guard
     {
         private const int PollIntervalMilliseconds = 100;
         private const int MaxTrackingDurationMilliseconds = 15000;
-        private const int MaxSnapshotsPerSession = 8;
+        private const int MaxSnapshotsPerSession = 12;
+        private const int FailSafeQuietPeriodMilliseconds = 350;
+        private const int MaxFailSafeRecoveryAttempts = 3;
 
         private static readonly object s_Gate = new object();
 
@@ -20,6 +22,9 @@ namespace Settings_File_Guard
         private static int s_ChangeCount;
         private static int s_SnapshotCount;
         private static Timer s_Timer;
+        private static DateTime s_LastChangeObservedUtc;
+        private static bool s_FailSafePending;
+        private static int s_FailSafeRecoveryAttempts;
 
         public static bool IsTracking
         {
@@ -72,6 +77,9 @@ namespace Settings_File_Guard
                 s_StartedUtc = DateTime.UtcNow;
                 s_ChangeCount = 0;
                 s_SnapshotCount = 0;
+                s_LastChangeObservedUtc = DateTime.MinValue;
+                s_FailSafePending = false;
+                s_FailSafeRecoveryAttempts = 0;
                 s_LastObservedState = CaptureCurrentState();
                 s_Timer = new Timer(PollForLateWrites, null, PollIntervalMilliseconds, PollIntervalMilliseconds);
 
@@ -113,6 +121,7 @@ namespace Settings_File_Guard
         {
             lock (s_Gate)
             {
+                TryRunFailSafeRecoveryLocked($"terminal-{phase}", ignoreQuietPeriod: true);
                 TrackedFileState currentState = CaptureCurrentState();
                 string message =
                     $"[KEYBIND_TRACE] Shutdown lifecycle event. phase={phase}, state={DescribeTrackingStateLocked()}, current={currentState}";
@@ -136,6 +145,8 @@ namespace Settings_File_Guard
                 if (!currentState.Equals(s_LastObservedState))
                 {
                     s_ChangeCount += 1;
+                    s_LastChangeObservedUtc = DateTime.UtcNow;
+                    s_FailSafePending = true;
                     string message =
                         $"[KEYBIND_TRACE] Detected Settings.coc change during shutdown tracking. state={DescribeTrackingStateLocked()}, previous={s_LastObservedState}, current={currentState}";
                     Mod.log.Warn(message);
@@ -144,8 +155,11 @@ namespace Settings_File_Guard
                     s_LastObservedState = currentState;
                 }
 
+                TryRunFailSafeRecoveryLocked("poll", ignoreQuietPeriod: false);
+
                 if ((DateTime.UtcNow - s_StartedUtc).TotalMilliseconds >= MaxTrackingDurationMilliseconds)
                 {
+                    TryRunFailSafeRecoveryLocked("timeout", ignoreQuietPeriod: true);
                     string message =
                         $"[KEYBIND_TRACE] Shutdown write tracking expired. state={DescribeTrackingStateLocked()}, final={s_LastObservedState}";
                     Mod.log.Info(message);
@@ -166,6 +180,79 @@ namespace Settings_File_Guard
             Mod.log.Info(message);
             GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
             DumpSnapshotIfPossible($"shutdown-track-{SanitizeLabel(source)}", currentState);
+        }
+
+        private static void TryRunFailSafeRecoveryLocked(string trigger, bool ignoreQuietPeriod)
+        {
+            if (!s_FailSafePending && !ignoreQuietPeriod)
+            {
+                return;
+            }
+
+            if (s_FailSafeRecoveryAttempts >= MaxFailSafeRecoveryAttempts)
+            {
+                string exhaustedMessage =
+                    "[KEYBIND_TRACE] Shutdown fail-safe reached the maximum recovery attempts and will stop retrying. " +
+                    $"trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}";
+                Mod.log.Warn(exhaustedMessage);
+                GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", exhaustedMessage);
+                s_FailSafePending = false;
+                return;
+            }
+
+            if (!ignoreQuietPeriod &&
+                s_LastChangeObservedUtc != DateTime.MinValue &&
+                (DateTime.UtcNow - s_LastChangeObservedUtc).TotalMilliseconds < FailSafeQuietPeriodMilliseconds)
+            {
+                return;
+            }
+
+            if (!SettingsFileProtectionService.CurrentSettingsFileHasHardRestoreFailure())
+            {
+                if (s_FailSafePending)
+                {
+                    string skipMessage =
+                        "[KEYBIND_TRACE] Shutdown fail-safe skipped automatic restore because the file stabilized " +
+                        $"without meeting the hard-restore threshold. trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}";
+                    Mod.log.Info(skipMessage);
+                    GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", skipMessage);
+                    s_FailSafePending = false;
+                }
+
+                return;
+            }
+
+            s_FailSafeRecoveryAttempts += 1;
+            string reason = $"shutdown fail-safe attempt {s_FailSafeRecoveryAttempts} ({trigger})";
+            string beforeDescription = SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath);
+            string beginMessage =
+                "[KEYBIND_TRACE] Shutdown fail-safe is attempting restore from healthy backup. " +
+                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentBefore={beforeDescription}";
+            Mod.log.Warn(beginMessage);
+            GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", beginMessage);
+            DumpSnapshotIfPossible($"shutdown-failsafe-before-{s_FailSafeRecoveryAttempts:00}", CaptureCurrentState());
+
+            SettingsFileProtectionService.RestoreBackupIfCurrentLooksCorrupted(reason);
+
+            TrackedFileState recoveredState = CaptureCurrentState();
+            s_LastObservedState = recoveredState;
+            s_LastChangeObservedUtc = DateTime.UtcNow;
+            s_FailSafePending = SettingsFileProtectionService.CurrentSettingsFileHasHardRestoreFailure();
+
+            string endMessage =
+                "[KEYBIND_TRACE] Shutdown fail-safe restore attempt finished. " +
+                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentAfter={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}";
+            if (s_FailSafePending)
+            {
+                Mod.log.Warn(endMessage);
+            }
+            else
+            {
+                Mod.log.Info(endMessage);
+            }
+
+            GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", endMessage);
+            DumpSnapshotIfPossible($"shutdown-failsafe-after-{s_FailSafeRecoveryAttempts:00}", recoveredState);
         }
 
         private static void DumpSnapshotIfPossible(string label, TrackedFileState state)
@@ -197,7 +284,7 @@ namespace Settings_File_Guard
                 ? (long)Math.Max(0, (DateTime.UtcNow - s_StartedUtc).TotalMilliseconds)
                 : 0;
             return
-                $"tracking={s_IsTracking}, reason={s_Reason ?? "none"}, elapsedMs={elapsedMilliseconds}, changeCount={s_ChangeCount}, snapshotCount={s_SnapshotCount}";
+                $"tracking={s_IsTracking}, reason={s_Reason ?? "none"}, elapsedMs={elapsedMilliseconds}, changeCount={s_ChangeCount}, snapshotCount={s_SnapshotCount}, failSafePending={s_FailSafePending}, failSafeAttempts={s_FailSafeRecoveryAttempts}";
         }
 
         private static TrackedFileState CaptureCurrentState()
