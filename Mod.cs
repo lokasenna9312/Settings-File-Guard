@@ -28,6 +28,7 @@ namespace Settings_File_Guard
             SettingsFileProtectionService.RestoreBackupIfCurrentLooksCorrupted("startup validation");
             KeybindingPersistenceGuardPatches.Apply();
             SettingsSaveTracePatches.Apply();
+            AssetDatabaseSettingsTracePatches.Apply();
             SettingsFileIoTracePatches.Apply();
             KeybindingPersistenceGuardPatches.CaptureCurrentBindings();
             SettingsFileProtectionService.BackupHealthySettingsFile("post-load baseline");
