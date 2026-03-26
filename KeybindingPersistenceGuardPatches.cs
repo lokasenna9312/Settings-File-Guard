@@ -88,11 +88,15 @@ namespace Settings_File_Guard
                 }
 
                 Mod.log.Info("[KEYBIND_GUARD] Keybinding persistence guard patches applied.");
+                GuardDiagnostics.WriteEvent(
+                    "BINDINGS",
+                    $"Harmony patches applied. getterPatched={s_KeybindingSettingsBindingsGetter != null}, memberValuePatched={s_TypeExtensionsGetMemberValueMethod != null}");
             }
             catch (Exception ex)
             {
                 s_Harmony = null;
                 Mod.log.Error(ex, "Failed to apply keybinding persistence safeguard.");
+                GuardDiagnostics.WriteEvent("BINDINGS", $"Apply failed. exception={ex}");
             }
         }
 
@@ -100,6 +104,10 @@ namespace Settings_File_Guard
         {
             try
             {
+                GuardDiagnostics.WriteEvent(
+                    "BINDINGS",
+                    $"CaptureCurrentBindings invoked. inputManagerAvailable={InputManager.instance != null}");
+
                 if (InputManager.instance == null)
                 {
                     return;
@@ -111,6 +119,7 @@ namespace Settings_File_Guard
             catch (Exception ex)
             {
                 Mod.log.Error(ex, "Failed to capture current keybinding state.");
+                GuardDiagnostics.WriteEvent("BINDINGS", $"CaptureCurrentBindings failed. exception={ex}");
             }
         }
 
@@ -174,9 +183,16 @@ namespace Settings_File_Guard
 
         private static void CaptureBindings(InputManager.PathType pathType)
         {
-            if (!TryReadBindings(pathType, out _, out Exception failure) && failure != null)
+            if (!TryReadBindings(pathType, out List<ProxyBinding> bindings, out Exception failure) && failure != null)
             {
                 throw failure;
+            }
+
+            if (bindings != null)
+            {
+                GuardDiagnostics.WriteEvent(
+                    "BINDINGS",
+                    $"Captured {pathType} bindings. count={bindings.Count}, cachedOriginal={GetCachedBindingCount(InputManager.PathType.Original)}, cachedEffective={GetCachedBindingCount(InputManager.PathType.Effective)}");
             }
         }
 
@@ -384,6 +400,9 @@ namespace Settings_File_Guard
 
             Mod.log.Warn(
                 $"[KEYBIND_GUARD] Suppressed {pathType} bindings save failure using {source}. count={bindingCount}, reason={failureText}");
+            GuardDiagnostics.WriteEvent(
+                "BINDINGS",
+                $"Fallback used. pathType={pathType}, source={source}, count={bindingCount}, cachedOriginal={GetCachedBindingCount(InputManager.PathType.Original)}, cachedEffective={GetCachedBindingCount(InputManager.PathType.Effective)}, failure={failure}");
         }
 
         private static void LogMemberValueSuppression(MemberInfo member, object obj, Exception failure)
@@ -401,6 +420,9 @@ namespace Settings_File_Guard
                 $"memberInfoType={member?.GetType().FullName}, " +
                 $"objType={obj?.GetType().FullName}, " +
                 $"reason={failure.GetType().Name}: {failure.Message}");
+            GuardDiagnostics.WriteEvent(
+                "BINDINGS",
+                $"TypeExtensions.GetMemberValue suppression. member={member?.DeclaringType?.FullName}.{member?.Name}, objType={obj?.GetType().FullName}, failure={failure}");
         }
 
         private static List<ProxyBinding> CloneBindings(IEnumerable<ProxyBinding> bindings)
@@ -441,6 +463,7 @@ namespace Settings_File_Guard
 
             s_LoggedGuardInternalFailure = true;
             Mod.log.Error(ex, $"[KEYBIND_GUARD] Internal guard failure during {phase}.");
+            GuardDiagnostics.WriteEvent("BINDINGS", $"Internal guard failure. phase={phase}, exception={ex}");
         }
 
         private static void LogBindingCloneFailure(Exception ex)
@@ -453,6 +476,13 @@ namespace Settings_File_Guard
             s_LoggedBindingCloneFailure = true;
             Mod.log.Warn(
                 $"[KEYBIND_GUARD] Failed to clone one or more bindings. Falling back to original binding instances. reason={ex.GetType().Name}: {ex.Message}");
+            GuardDiagnostics.WriteEvent("BINDINGS", $"Binding clone failure. exception={ex}");
+        }
+
+        private static int GetCachedBindingCount(InputManager.PathType pathType)
+        {
+            List<ProxyBinding> bindings = GetCachedBindings(pathType);
+            return bindings?.Count ?? 0;
         }
     }
 }

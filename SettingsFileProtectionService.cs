@@ -1,13 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
-using UnityEngine;
 
 namespace Settings_File_Guard
 {
     internal static class SettingsFileProtectionService
     {
         private const string BackupFileName = "Settings.coc.settings_file_guard.bak";
+        private const string HealthySnapshotFilePrefix = "Settings.coc.settings_file_guard.healthy.";
+        private const string HealthySnapshotFileSuffix = ".bak";
+        private const string CorruptSnapshotFilePrefix = "Settings.coc.settings_guard.corrupt.";
+        private const string CorruptSnapshotFileSuffix = ".bak";
+        private const int MaxHealthySnapshots = 5;
+        private const long MinimumHealthyFileLengthBytes = 512;
+
         private static readonly object s_FileGate = new object();
         private static bool s_LoggedMissingHealthyBackup;
 
@@ -17,27 +24,65 @@ namespace Settings_File_Guard
             {
                 try
                 {
-                    if (!File.Exists(SettingsFilePath))
-                    {
-                        return;
-                    }
+                    SettingsFileAnalysis currentAnalysis = AnalyzeSettingsFile(GuardPaths.SettingsFilePath);
+                    SettingsFileAnalysis bestHealthyBackup = SelectBestHealthyBackupCandidate(out string candidateSummary);
+                    GuardDiagnostics.WriteEvent(
+                        "BACKUP",
+                        $"BackupHealthySettingsFile start. reason={reason}, current={currentAnalysis.Describe()}, candidates={candidateSummary}");
 
-                    if (!LooksHealthy(SettingsFilePath))
+                    if (!currentAnalysis.LooksHealthy)
                     {
                         Mod.log.Warn(
-                            $"[KEYBIND_BACKUP] Skipped backup because current Settings.coc does not look healthy. reason={reason}, path={SettingsFilePath}");
+                            $"[KEYBIND_BACKUP] Skipped backup because current Settings.coc does not look healthy. reason={reason}, current={currentAnalysis.Describe()}, candidates={candidateSummary}");
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "BACKUP",
+                            $"backup-skip-{reason}",
+                            GuardPaths.SettingsFilePath,
+                            currentAnalysis.Describe());
                         return;
                     }
 
-                    Directory.CreateDirectory(SettingsDirectoryPath);
-                    File.Copy(SettingsFilePath, BackupFilePath, overwrite: true);
+                    Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
+                    File.Copy(GuardPaths.SettingsFilePath, BackupFilePath, overwrite: true);
+
+                    string healthySnapshotPath = CreateHealthySnapshotPath();
+                    SafeCopyWithRetries(GuardPaths.SettingsFilePath, healthySnapshotPath, overwrite: true);
+                    PruneHealthySnapshots();
+
                     s_LoggedMissingHealthyBackup = false;
+
+                    if (bestHealthyBackup != null &&
+                        currentAnalysis.BindingMapCount == 0 &&
+                        bestHealthyBackup.BindingMapCount > 0)
+                    {
+                        Mod.log.Warn(
+                            "[KEYBIND_BACKUP] Backed up a syntactically healthy Settings.coc with zero binding map entries " +
+                            $"even though an older healthy backup has {bestHealthyBackup.BindingMapCount}. " +
+                            $"reason={reason}, current={currentAnalysis.Describe()}, olderHealthy={bestHealthyBackup.DescribeCompact()}");
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "BACKUP",
+                            $"backup-warning-current-{reason}",
+                            GuardPaths.SettingsFilePath,
+                            currentAnalysis.Describe());
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "BACKUP",
+                            $"backup-warning-reference-{reason}",
+                            bestHealthyBackup.FilePath,
+                            bestHealthyBackup.Describe());
+                    }
+
                     Mod.log.Info(
-                        $"[KEYBIND_BACKUP] Backed up healthy Settings.coc. reason={reason}, path={BackupFilePath}");
+                        $"[KEYBIND_BACKUP] Backed up healthy Settings.coc. reason={reason}, primary={BackupFilePath}, snapshot={healthySnapshotPath}, current={currentAnalysis.Describe()}, candidatesBeforeWrite={candidateSummary}");
+                    GuardDiagnostics.WriteEvent(
+                        "BACKUP",
+                        $"BackupHealthySettingsFile completed. reason={reason}, primary={BackupFilePath}, snapshot={healthySnapshotPath}, current={currentAnalysis.Describe()}");
                 }
                 catch (Exception ex)
                 {
                     Mod.log.Error(ex, $"[KEYBIND_BACKUP] Failed to back up Settings.coc. reason={reason}");
+                    GuardDiagnostics.WriteEvent(
+                        "BACKUP",
+                        $"BackupHealthySettingsFile failed. reason={reason}, exception={ex}");
                 }
             }
         }
@@ -48,98 +93,311 @@ namespace Settings_File_Guard
             {
                 try
                 {
-                    if (!File.Exists(BackupFilePath))
+                    SettingsFileAnalysis currentAnalysis = AnalyzeSettingsFile(GuardPaths.SettingsFilePath);
+                    SettingsFileAnalysis bestHealthyBackup = SelectBestHealthyBackupCandidate(out string candidateSummary);
+                    GuardDiagnostics.WriteEvent(
+                        "RESTORE",
+                        $"RestoreBackupIfCurrentLooksCorrupted start. reason={reason}, current={currentAnalysis.Describe()}, candidates={candidateSummary}");
+
+                    if (bestHealthyBackup == null)
                     {
                         if (!s_LoggedMissingHealthyBackup)
                         {
                             s_LoggedMissingHealthyBackup = true;
                             Mod.log.Warn(
-                                $"[KEYBIND_BACKUP] No healthy backup is available. restoreReason={reason}, expectedBackup={BackupFilePath}");
+                                $"[KEYBIND_BACKUP] No healthy backup candidate is available. restoreReason={reason}, current={currentAnalysis.Describe()}, candidates={candidateSummary}");
+                        }
+
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "RESTORE",
+                            $"restore-missing-candidate-{reason}",
+                            GuardPaths.SettingsFilePath,
+                            currentAnalysis.Describe());
+                        return;
+                    }
+
+                    s_LoggedMissingHealthyBackup = false;
+
+                    if (currentAnalysis.LooksHealthy)
+                    {
+                        if (LooksSuspiciousComparedToHealthyBackup(currentAnalysis, bestHealthyBackup))
+                        {
+                            Mod.log.Warn(
+                                "[KEYBIND_BACKUP] Current Settings.coc passed baseline health checks but looks suspicious " +
+                                $"compared to the strongest healthy backup. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
+                            GuardDiagnostics.DumpFileSnapshot(
+                                "RESTORE",
+                                $"restore-suspicious-current-{reason}",
+                                GuardPaths.SettingsFilePath,
+                                currentAnalysis.Describe());
+                            GuardDiagnostics.DumpFileSnapshot(
+                                "RESTORE",
+                                $"restore-suspicious-reference-{reason}",
+                                bestHealthyBackup.FilePath,
+                                bestHealthyBackup.Describe());
+                        }
+                        else
+                        {
+                            Mod.log.Info(
+                                $"[KEYBIND_BACKUP] Current Settings.coc passed validation. restoreReason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.DescribeCompact()}");
                         }
 
                         return;
                     }
 
-                    if (!LooksHealthy(BackupFilePath))
+                    Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
+
+                    string corruptSnapshotPath = null;
+                    if (currentAnalysis.Exists)
                     {
-                        Mod.log.Warn(
-                            $"[KEYBIND_BACKUP] Existing backup also looks unhealthy. restoreReason={reason}, backupPath={BackupFilePath}");
-                        return;
+                        corruptSnapshotPath = CreateCorruptSnapshotPath();
+                        GuardDiagnostics.DumpFileSnapshot(
+                            "RESTORE",
+                            $"restore-current-before-replace-{reason}",
+                            GuardPaths.SettingsFilePath,
+                            currentAnalysis.Describe());
+                        SafeCopyWithRetries(GuardPaths.SettingsFilePath, corruptSnapshotPath, overwrite: true);
                     }
 
-                    if (File.Exists(SettingsFilePath) && LooksHealthy(SettingsFilePath))
-                    {
-                        return;
-                    }
-
-                    Directory.CreateDirectory(SettingsDirectoryPath);
-
-                    if (File.Exists(SettingsFilePath))
-                    {
-                        string corruptSnapshotPath = Path.Combine(
-                            SettingsDirectoryPath,
-                            $"Settings.coc.settings_guard.corrupt.{DateTime.Now:yyyyMMdd_HHmmss}.bak");
-                        SafeCopyWithRetries(SettingsFilePath, corruptSnapshotPath, overwrite: true);
-                    }
-
-                    SafeCopyWithRetries(BackupFilePath, SettingsFilePath, overwrite: true);
+                    GuardDiagnostics.DumpFileSnapshot(
+                        "RESTORE",
+                        $"restore-selected-backup-{reason}",
+                        bestHealthyBackup.FilePath,
+                        bestHealthyBackup.Describe());
+                    SafeCopyWithRetries(bestHealthyBackup.FilePath, GuardPaths.SettingsFilePath, overwrite: true);
                     Mod.log.Warn(
-                        $"[KEYBIND_BACKUP] Restored Settings.coc from backup. reason={reason}, backupPath={BackupFilePath}");
+                        $"[KEYBIND_BACKUP] Restored Settings.coc from backup. reason={reason}, chosenHealthy={bestHealthyBackup.Describe()}, currentBeforeRestore={currentAnalysis.Describe()}, corruptSnapshot={corruptSnapshotPath ?? "none"}, candidates={candidateSummary}");
+                    GuardDiagnostics.DumpFileSnapshot(
+                        "RESTORE",
+                        $"restore-current-after-replace-{reason}",
+                        GuardPaths.SettingsFilePath,
+                        "Captured after restoring Settings.coc from the selected healthy backup.");
                 }
                 catch (Exception ex)
                 {
                     Mod.log.Error(ex, $"[KEYBIND_BACKUP] Failed to restore Settings.coc from backup. reason={reason}");
+                    GuardDiagnostics.WriteEvent(
+                        "RESTORE",
+                        $"RestoreBackupIfCurrentLooksCorrupted failed. reason={reason}, exception={ex}");
                 }
             }
         }
 
-        private static string SettingsDirectoryPath
+        private static string BackupFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, BackupFileName);
+
+        private static SettingsFileAnalysis AnalyzeSettingsFile(string path)
         {
-            get
-            {
-                string persistentDataPath = Application.persistentDataPath;
-                if (!string.IsNullOrWhiteSpace(persistentDataPath))
-                {
-                    return persistentDataPath;
-                }
-
-                return Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "AppData",
-                    "LocalLow",
-                    "Colossal Order",
-                    "Cities Skylines II");
-            }
-        }
-
-        private static string SettingsFilePath => Path.Combine(SettingsDirectoryPath, "Settings.coc");
-
-        private static string BackupFilePath => Path.Combine(SettingsDirectoryPath, BackupFileName);
-
-        private static bool LooksHealthy(string path)
-        {
+            SettingsFileAnalysis analysis = new SettingsFileAnalysis(path);
             if (!File.Exists(path))
             {
-                return false;
+                return analysis;
             }
 
-            FileInfo info = new FileInfo(path);
-            if (info.Length < 512)
+            try
+            {
+                FileInfo info = new FileInfo(path);
+                analysis.Exists = true;
+                analysis.Length = info.Length;
+                analysis.LastWriteTimeUtc = info.LastWriteTimeUtc;
+
+                string text = File.ReadAllText(path);
+                analysis.HasGeneralSettings = text.IndexOf("General Settings", StringComparison.Ordinal) >= 0;
+                analysis.HasGraphicsSettings = text.IndexOf("Graphics Settings", StringComparison.Ordinal) >= 0;
+                analysis.HasKeybindingSettingsSection =
+                    text.IndexOf("Keybinding Settings", StringComparison.Ordinal) >= 0 ||
+                    text.IndexOf("Input Settings", StringComparison.Ordinal) >= 0;
+                analysis.HasBindingsProperty = text.IndexOf("\"bindings\"", StringComparison.Ordinal) >= 0;
+                analysis.BindingMapCount = CountOccurrences(text, "\"m_MapName\"");
+                analysis.ActionNameCount = CountOccurrences(text, "\"m_ActionName\"");
+                analysis.DeviceCount = CountOccurrences(text, "\"m_Device\"");
+                analysis.BindingPathCount = CountOccurrences(text, "\"m_Path\"");
+                analysis.ModifierCount = CountOccurrences(text, "\"m_Modifiers\"");
+            }
+            catch (Exception ex)
+            {
+                analysis.ReadFailure = $"{ex.GetType().Name}: {ex.Message}";
+            }
+
+            return analysis;
+        }
+
+        private static SettingsFileAnalysis SelectBestHealthyBackupCandidate(out string candidateSummary)
+        {
+            List<SettingsFileAnalysis> analyses = new List<SettingsFileAnalysis>();
+
+            foreach (string candidatePath in EnumerateBackupCandidatePaths())
+            {
+                analyses.Add(AnalyzeSettingsFile(candidatePath));
+            }
+
+            candidateSummary = BuildCandidateSummary(analyses);
+
+            SettingsFileAnalysis bestHealthyBackup = null;
+            foreach (SettingsFileAnalysis analysis in analyses)
+            {
+                if (!analysis.LooksHealthy)
+                {
+                    continue;
+                }
+
+                if (IsBetterRestoreCandidate(analysis, bestHealthyBackup))
+                {
+                    bestHealthyBackup = analysis;
+                }
+            }
+
+            return bestHealthyBackup;
+        }
+
+        private static IEnumerable<string> EnumerateBackupCandidatePaths()
+        {
+            yield return BackupFilePath;
+
+            if (!Directory.Exists(GuardPaths.SettingsDirectoryPath))
+            {
+                yield break;
+            }
+
+            string[] snapshotPaths = Directory.GetFiles(
+                GuardPaths.SettingsDirectoryPath,
+                $"{HealthySnapshotFilePrefix}*{HealthySnapshotFileSuffix}");
+
+            foreach (string snapshotPath in snapshotPaths)
+            {
+                yield return snapshotPath;
+            }
+        }
+
+        private static string BuildCandidateSummary(List<SettingsFileAnalysis> analyses)
+        {
+            if (analyses.Count == 0)
+            {
+                return "none";
+            }
+
+            List<string> descriptions = new List<string>(analyses.Count);
+            foreach (SettingsFileAnalysis analysis in analyses)
+            {
+                descriptions.Add(analysis.DescribeCompact());
+            }
+
+            return string.Join(" | ", descriptions.ToArray());
+        }
+
+        private static bool IsBetterRestoreCandidate(SettingsFileAnalysis candidate, SettingsFileAnalysis currentBest)
+        {
+            if (candidate == null)
             {
                 return false;
             }
 
-            string text = File.ReadAllText(path);
-            bool hasBindingsSection =
-                text.IndexOf("Keybinding Settings", StringComparison.Ordinal) >= 0 ||
-                text.IndexOf("Input Settings", StringComparison.Ordinal) >= 0;
-            bool hasBindingEntries = text.IndexOf("\"m_MapName\"", StringComparison.Ordinal) >= 0;
+            if (currentBest == null)
+            {
+                return true;
+            }
 
-            return
-                hasBindingsSection &&
-                hasBindingEntries &&
-                text.IndexOf("Graphics Settings", StringComparison.Ordinal) >= 0 &&
-                text.IndexOf("General Settings", StringComparison.Ordinal) >= 0;
+            if (candidate.StrengthScore != currentBest.StrengthScore)
+            {
+                return candidate.StrengthScore > currentBest.StrengthScore;
+            }
+
+            return candidate.LastWriteTimeUtc > currentBest.LastWriteTimeUtc;
+        }
+
+        private static bool LooksSuspiciousComparedToHealthyBackup(
+            SettingsFileAnalysis currentAnalysis,
+            SettingsFileAnalysis healthyReference)
+        {
+            return currentAnalysis != null &&
+                   healthyReference != null &&
+                   currentAnalysis.LooksHealthy &&
+                   healthyReference.LooksHealthy &&
+                   healthyReference.BindingMapCount > 0 &&
+                   currentAnalysis.BindingMapCount == 0 &&
+                   currentAnalysis.ActionNameCount == 0 &&
+                   currentAnalysis.BindingPathCount == 0 &&
+                   currentAnalysis.Length * 2 < healthyReference.Length;
+        }
+
+        private static void PruneHealthySnapshots()
+        {
+            if (!Directory.Exists(GuardPaths.SettingsDirectoryPath))
+            {
+                return;
+            }
+
+            FileInfo[] snapshotFiles = new DirectoryInfo(GuardPaths.SettingsDirectoryPath).GetFiles(
+                $"{HealthySnapshotFilePrefix}*{HealthySnapshotFileSuffix}");
+            Array.Sort(snapshotFiles, CompareByLastWriteDescending);
+
+            for (int i = MaxHealthySnapshots; i < snapshotFiles.Length; i += 1)
+            {
+                try
+                {
+                    string path = snapshotFiles[i].FullName;
+                    snapshotFiles[i].Delete();
+                    Mod.log.Info($"[KEYBIND_BACKUP] Pruned old healthy snapshot. path={path}");
+                }
+                catch (Exception ex)
+                {
+                    Mod.log.Warn(
+                        $"[KEYBIND_BACKUP] Failed to prune old healthy snapshot. path={snapshotFiles[i].FullName}, reason={ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
+        private static int CompareByLastWriteDescending(FileInfo left, FileInfo right)
+        {
+            int comparison = right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+
+            return string.Compare(left.FullName, right.FullName, StringComparison.Ordinal);
+        }
+
+        private static string CreateHealthySnapshotPath()
+        {
+            return CreateTimestampedSnapshotPath(HealthySnapshotFilePrefix, HealthySnapshotFileSuffix);
+        }
+
+        private static string CreateCorruptSnapshotPath()
+        {
+            return CreateTimestampedSnapshotPath(CorruptSnapshotFilePrefix, CorruptSnapshotFileSuffix);
+        }
+
+        private static string CreateTimestampedSnapshotPath(string prefix, string suffix)
+        {
+            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmssfff");
+            string path = Path.Combine(GuardPaths.SettingsDirectoryPath, $"{prefix}{timestamp}{suffix}");
+            int discriminator = 1;
+
+            while (File.Exists(path))
+            {
+                path = Path.Combine(GuardPaths.SettingsDirectoryPath, $"{prefix}{timestamp}_{discriminator:00}{suffix}");
+                discriminator += 1;
+            }
+
+            return path;
+        }
+
+        private static int CountOccurrences(string text, string pattern)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(pattern))
+            {
+                return 0;
+            }
+
+            int count = 0;
+            int index = 0;
+            while ((index = text.IndexOf(pattern, index, StringComparison.Ordinal)) >= 0)
+            {
+                count += 1;
+                index += pattern.Length;
+            }
+
+            return count;
         }
 
         private static void SafeCopyWithRetries(string sourcePath, string destinationPath, bool overwrite)
@@ -159,6 +417,151 @@ namespace Settings_File_Guard
             }
 
             File.Copy(sourcePath, destinationPath, overwrite);
+        }
+
+        private sealed class SettingsFileAnalysis
+        {
+            public SettingsFileAnalysis(string filePath)
+            {
+                FilePath = filePath;
+                LastWriteTimeUtc = DateTime.MinValue;
+            }
+
+            public string FilePath { get; }
+
+            public bool Exists { get; set; }
+
+            public long Length { get; set; }
+
+            public DateTime LastWriteTimeUtc { get; set; }
+
+            public string ReadFailure { get; set; }
+
+            public bool HasGeneralSettings { get; set; }
+
+            public bool HasGraphicsSettings { get; set; }
+
+            public bool HasKeybindingSettingsSection { get; set; }
+
+            public bool HasBindingsProperty { get; set; }
+
+            public int BindingMapCount { get; set; }
+
+            public int ActionNameCount { get; set; }
+
+            public int DeviceCount { get; set; }
+
+            public int BindingPathCount { get; set; }
+
+            public int ModifierCount { get; set; }
+
+            public bool LooksHealthy =>
+                Exists &&
+                string.IsNullOrEmpty(ReadFailure) &&
+                Length >= MinimumHealthyFileLengthBytes &&
+                HasGeneralSettings &&
+                HasGraphicsSettings &&
+                HasKeybindingSettingsSection &&
+                HasBindingsProperty;
+
+            public int StrengthScore
+            {
+                get
+                {
+                    int score = LooksHealthy ? 10000 : 0;
+                    if (HasGeneralSettings)
+                    {
+                        score += 250;
+                    }
+
+                    if (HasGraphicsSettings)
+                    {
+                        score += 250;
+                    }
+
+                    if (HasKeybindingSettingsSection)
+                    {
+                        score += 400;
+                    }
+
+                    if (HasBindingsProperty)
+                    {
+                        score += 250;
+                    }
+
+                    score += Math.Min(BindingMapCount, 100) * 30;
+                    score += Math.Min(ActionNameCount, 100) * 15;
+                    score += Math.Min(DeviceCount, 100) * 10;
+                    score += Math.Min(BindingPathCount, 100) * 10;
+                    score += Math.Min(ModifierCount, 100) * 5;
+                    score += (int)Math.Min(Length / 64L, 500L);
+                    return score;
+                }
+            }
+
+            public string Describe()
+            {
+                return
+                    $"file={FilePath}, exists={Exists}, length={Length}, general={HasGeneralSettings}, graphics={HasGraphicsSettings}, " +
+                    $"keybindingSection={HasKeybindingSettingsSection}, bindingsProperty={HasBindingsProperty}, bindingMaps={BindingMapCount}, " +
+                    $"actions={ActionNameCount}, devices={DeviceCount}, bindingPaths={BindingPathCount}, modifiers={ModifierCount}, " +
+                    $"healthy={LooksHealthy}, score={StrengthScore}, reason={GetHealthReason()}, lastWriteUtc={LastWriteTimeUtc:O}";
+            }
+
+            public string DescribeCompact()
+            {
+                return
+                    $"{Path.GetFileName(FilePath)}(healthy={LooksHealthy}, len={Length}, maps={BindingMapCount}, actions={ActionNameCount}, " +
+                    $"score={StrengthScore}, reason={GetHealthReason()})";
+            }
+
+            private string GetHealthReason()
+            {
+                if (!Exists)
+                {
+                    return "missing";
+                }
+
+                if (!string.IsNullOrEmpty(ReadFailure))
+                {
+                    return $"read-failed:{ReadFailure}";
+                }
+
+                if (LooksHealthy)
+                {
+                    return "healthy";
+                }
+
+                List<string> reasons = new List<string>();
+                if (Length < MinimumHealthyFileLengthBytes)
+                {
+                    reasons.Add($"length<{MinimumHealthyFileLengthBytes}");
+                }
+
+                if (!HasGeneralSettings)
+                {
+                    reasons.Add("missing-general");
+                }
+
+                if (!HasGraphicsSettings)
+                {
+                    reasons.Add("missing-graphics");
+                }
+
+                if (!HasKeybindingSettingsSection)
+                {
+                    reasons.Add("missing-keybinding-section");
+                }
+
+                if (!HasBindingsProperty)
+                {
+                    reasons.Add("missing-bindings-property");
+                }
+
+                return reasons.Count > 0
+                    ? string.Join(",", reasons.ToArray())
+                    : "insufficient-structure";
+            }
         }
     }
 }
