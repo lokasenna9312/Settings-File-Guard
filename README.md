@@ -32,6 +32,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 - It cannot restore anything until a healthy backup has been created at least once.
 - The diagnostic log helps explain failures, but it is not itself a restorable source of keybindings. Actual recovery still depends on healthy backups or snapshots.
 - Conservative recovery may intentionally leave a suspicious but still parseable `Settings.coc` in place so that evidence is preserved for diagnosis.
+- Binding entry counts in logs can reflect only user-overridden built-in shortcuts, so a low count by itself is not treated as corruption.
 
 ## Files and Paths
 
@@ -49,6 +50,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 - Create an empty `Settings_File_Guard.DeepDiagnostics.enabled` file in the game's user data directory before launching the game.
 - When enabled, the mod writes a separate per-session diagnostic log plus targeted `Settings.coc` snapshots before restore, after restore, and around suspicious backup or keybinding fallback events.
 - Startup logs also record the loaded mod assembly path, size, and timestamp so you can confirm which build the game actually loaded.
+- Shutdown tracking starts at `OnDispose`, records late `Settings.coc` writes through process shutdown, and traces `SettingAsset.Save(...)` / `SaveWithPersist(...)` entry and exit events so post-dispose saves can be correlated with file changes.
 - Remove the toggle file to return to the normal lightweight logging mode.
 
 ## Installation and First Run

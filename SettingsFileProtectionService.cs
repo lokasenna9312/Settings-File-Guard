@@ -69,26 +69,6 @@ namespace Settings_File_Guard
 
                     s_LoggedMissingHealthyBackup = false;
 
-                    if (bestHealthyBackup != null &&
-                        currentAnalysis.BindingMapCount == 0 &&
-                        bestHealthyBackup.BindingMapCount > 0)
-                    {
-                        Mod.log.Warn(
-                            "[KEYBIND_BACKUP] Backed up a syntactically healthy Settings.coc with zero binding map entries " +
-                            $"even though an older healthy backup has {bestHealthyBackup.BindingMapCount}. " +
-                            $"reason={reason}, current={currentAnalysis.Describe()}, olderHealthy={bestHealthyBackup.DescribeCompact()}");
-                        GuardDiagnostics.DumpFileSnapshot(
-                            "BACKUP",
-                            $"backup-warning-current-{reason}",
-                            GuardPaths.SettingsFilePath,
-                            currentAnalysis.Describe());
-                        GuardDiagnostics.DumpFileSnapshot(
-                            "BACKUP",
-                            $"backup-warning-reference-{reason}",
-                            bestHealthyBackup.FilePath,
-                            bestHealthyBackup.Describe());
-                    }
-
                     Mod.log.Info(
                         $"[KEYBIND_BACKUP] Backed up healthy Settings.coc. reason={reason}, primary={BackupFilePath}, snapshot={healthySnapshotPath}, current={currentAnalysis.Describe()}, candidatesBeforeWrite={candidateSummary}");
                     GuardDiagnostics.WriteEvent(
@@ -232,6 +212,11 @@ namespace Settings_File_Guard
 
         private static string BackupFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, BackupFileName);
 
+        internal static string DescribeSettingsFileForDiagnostics(string path)
+        {
+            return AnalyzeSettingsFile(path).Describe();
+        }
+
         private static SettingsFileAnalysis AnalyzeSettingsFile(string path)
         {
             SettingsFileAnalysis analysis = new SettingsFileAnalysis(path);
@@ -368,13 +353,9 @@ namespace Settings_File_Guard
             bool substantiallyLowerScore = candidate.StrengthScore * 100 < reference.StrengthScore * 80;
             bool materiallySmallerFile = candidate.Length * 100 < reference.Length * 85;
             bool materiallyFewerSections = candidate.SectionHeaderCount + 1 < reference.SectionHeaderCount;
-            bool farFewerBindings =
-                reference.BindingMapCount >= 4 &&
-                candidate.BindingMapCount * 2 < reference.BindingMapCount;
 
             return substantiallyLowerScore ||
-                   (materiallySmallerFile && materiallyFewerSections) ||
-                   (materiallySmallerFile && farFewerBindings);
+                   (materiallySmallerFile && materiallyFewerSections);
         }
 
         private static void PruneHealthySnapshots()
@@ -580,13 +561,8 @@ namespace Settings_File_Guard
                         score += 250;
                     }
 
-                    score += Math.Min(BindingMapCount, 100) * 30;
-                    score += Math.Min(ActionNameCount, 100) * 15;
-                    score += Math.Min(DeviceCount, 100) * 10;
-                    score += Math.Min(BindingPathCount, 100) * 10;
-                    score += Math.Min(ModifierCount, 100) * 5;
                     score += Math.Min(SectionHeaderCount, 50) * 80;
-                    score += (int)Math.Min(Length / 64L, 500L);
+                    score += (int)Math.Min(Length / 256L, 200L);
                     return score;
                 }
             }
