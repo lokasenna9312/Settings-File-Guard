@@ -3,4 +3,5 @@ obj/
 Library/
 .vs/
 .local/
+.codex_verify/
 *.log

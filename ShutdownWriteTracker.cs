@@ -11,6 +11,7 @@ namespace Settings_File_Guard
         private const int MaxSnapshotsPerSession = 12;
         private const int FailSafeQuietPeriodMilliseconds = 350;
         private const int MaxFailSafeRecoveryAttempts = 3;
+        private const int EpisodeGapMilliseconds = 250;
 
         private static readonly object s_Gate = new object();
 
@@ -25,6 +26,10 @@ namespace Settings_File_Guard
         private static DateTime s_LastChangeObservedUtc;
         private static bool s_FailSafePending;
         private static int s_FailSafeRecoveryAttempts;
+        private static int s_CurrentEpisodeId;
+        private static int s_CurrentEpisodeChangeCount;
+        private static int s_LastSeenSettingsSessionSerial;
+        private static int s_LastSeenStreamSessionSerial;
 
         public static bool IsTracking
         {
@@ -80,11 +85,15 @@ namespace Settings_File_Guard
                 s_LastChangeObservedUtc = DateTime.MinValue;
                 s_FailSafePending = false;
                 s_FailSafeRecoveryAttempts = 0;
+                s_CurrentEpisodeId = 0;
+                s_CurrentEpisodeChangeCount = 0;
+                s_LastSeenSettingsSessionSerial = AssetDatabaseSettingsTracePatches.CurrentSettingsSessionSerial;
+                s_LastSeenStreamSessionSerial = SettingsFileIoTracePatches.CurrentStreamSessionSerial;
                 s_LastObservedState = CaptureCurrentState();
                 s_Timer = new Timer(PollForLateWrites, null, PollIntervalMilliseconds, PollIntervalMilliseconds);
 
                 string message =
-                    $"[KEYBIND_TRACE] Armed shutdown write tracking. reason={reason}, state={DescribeTrackingStateLocked()}, baseline={s_LastObservedState}";
+                    $"[KEYBIND_TRACE] Armed shutdown write tracking. reason={reason}, state={DescribeTrackingStateLocked()}, baseline={s_LastObservedState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
                 Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                 DumpSnapshotIfPossible("shutdown-track-armed", s_LastObservedState);
@@ -124,7 +133,7 @@ namespace Settings_File_Guard
                 TryRunFailSafeRecoveryLocked($"terminal-{phase}", ignoreQuietPeriod: true);
                 TrackedFileState currentState = CaptureCurrentState();
                 string message =
-                    $"[KEYBIND_TRACE] Shutdown lifecycle event. phase={phase}, state={DescribeTrackingStateLocked()}, current={currentState}";
+                    $"[KEYBIND_TRACE] Shutdown lifecycle event. phase={phase}, state={DescribeTrackingStateLocked()}, current={currentState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
                 Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                 DumpSnapshotIfPossible($"shutdown-track-{phase}", currentState);
@@ -144,15 +153,38 @@ namespace Settings_File_Guard
                 TrackedFileState currentState = CaptureCurrentState();
                 if (!currentState.Equals(s_LastObservedState))
                 {
+                    DateTime observedUtc = DateTime.UtcNow;
+                    long gapMilliseconds = s_LastChangeObservedUtc == DateTime.MinValue
+                        ? -1
+                        : (long)Math.Max(0, (observedUtc - s_LastChangeObservedUtc).TotalMilliseconds);
+                    int currentSettingsSessionSerial = AssetDatabaseSettingsTracePatches.CurrentSettingsSessionSerial;
+                    int currentStreamSessionSerial = SettingsFileIoTracePatches.CurrentStreamSessionSerial;
+                    bool newSettingsSessionSeen = currentSettingsSessionSerial != s_LastSeenSettingsSessionSerial;
+                    bool newStreamSessionSeen = currentStreamSessionSerial != s_LastSeenStreamSessionSerial;
+                    string episodeReason = ClassifyEpisodeBoundaryLocked(gapMilliseconds, newSettingsSessionSeen, newStreamSessionSeen);
+                    if (!string.IsNullOrEmpty(episodeReason))
+                    {
+                        s_CurrentEpisodeId += 1;
+                        s_CurrentEpisodeChangeCount = 0;
+                    }
+
                     s_ChangeCount += 1;
-                    s_LastChangeObservedUtc = DateTime.UtcNow;
+                    s_CurrentEpisodeChangeCount += 1;
+                    s_LastChangeObservedUtc = observedUtc;
                     s_FailSafePending = true;
+                    string saveWindow = AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow();
+                    string streamWindow = SettingsFileIoTracePatches.DescribeSettingsWriteWindow();
                     string message =
-                        $"[KEYBIND_TRACE] Detected Settings.coc change during shutdown tracking. state={DescribeTrackingStateLocked()}, previous={s_LastObservedState}, current={currentState}";
+                        "[KEYBIND_TRACE] Detected Settings.coc change during shutdown tracking. " +
+                        $"state={DescribeTrackingStateLocked()}, episode={s_CurrentEpisodeId}:{s_CurrentEpisodeChangeCount}, episodeReason={episodeReason ?? "same-episode"}, " +
+                        $"gapMs={gapMilliseconds}, newSettingsSessionSeen={newSettingsSessionSeen}, newStreamSessionSeen={newStreamSessionSeen}, " +
+                        $"saveWindow={saveWindow}, streamWindow={streamWindow}, previous={s_LastObservedState}, current={currentState}";
                     Mod.log.Warn(message);
                     GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                     DumpSnapshotIfPossible($"shutdown-track-change-{s_ChangeCount:00}", currentState);
                     s_LastObservedState = currentState;
+                    s_LastSeenSettingsSessionSerial = currentSettingsSessionSerial;
+                    s_LastSeenStreamSessionSerial = currentStreamSessionSerial;
                 }
 
                 TryRunFailSafeRecoveryLocked("poll", ignoreQuietPeriod: false);
@@ -161,7 +193,7 @@ namespace Settings_File_Guard
                 {
                     TryRunFailSafeRecoveryLocked("timeout", ignoreQuietPeriod: true);
                     string message =
-                        $"[KEYBIND_TRACE] Shutdown write tracking expired. state={DescribeTrackingStateLocked()}, final={s_LastObservedState}";
+                        $"[KEYBIND_TRACE] Shutdown write tracking expired. state={DescribeTrackingStateLocked()}, final={s_LastObservedState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
                     Mod.log.Info(message);
                     GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                     StopTrackingTimer();
@@ -176,7 +208,7 @@ namespace Settings_File_Guard
             s_LastObservedState = currentState;
 
             string message =
-                $"[KEYBIND_TRACE] Updated shutdown tracking checkpoint. source={source}, state={DescribeTrackingStateLocked()}, current={currentState}";
+                $"[KEYBIND_TRACE] Updated shutdown tracking checkpoint. source={source}, state={DescribeTrackingStateLocked()}, current={currentState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
             Mod.log.Info(message);
             GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
             DumpSnapshotIfPossible($"shutdown-track-{SanitizeLabel(source)}", currentState);
@@ -193,7 +225,7 @@ namespace Settings_File_Guard
             {
                 string exhaustedMessage =
                     "[KEYBIND_TRACE] Shutdown fail-safe reached the maximum recovery attempts and will stop retrying. " +
-                    $"trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}";
+                    $"trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
                 Mod.log.Warn(exhaustedMessage);
                 GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", exhaustedMessage);
                 s_FailSafePending = false;
@@ -213,7 +245,7 @@ namespace Settings_File_Guard
                 {
                     string skipMessage =
                         "[KEYBIND_TRACE] Shutdown fail-safe skipped automatic restore because the file stabilized " +
-                        $"without meeting the hard-restore threshold. trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}";
+                        $"without meeting the hard-restore threshold. trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
                     Mod.log.Info(skipMessage);
                     GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", skipMessage);
                     s_FailSafePending = false;
@@ -227,7 +259,7 @@ namespace Settings_File_Guard
             string beforeDescription = SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath);
             string beginMessage =
                 "[KEYBIND_TRACE] Shutdown fail-safe is attempting restore from healthy backup. " +
-                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentBefore={beforeDescription}";
+                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentBefore={beforeDescription}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
             Mod.log.Warn(beginMessage);
             GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", beginMessage);
             DumpSnapshotIfPossible($"shutdown-failsafe-before-{s_FailSafeRecoveryAttempts:00}", CaptureCurrentState());
@@ -241,7 +273,7 @@ namespace Settings_File_Guard
 
             string endMessage =
                 "[KEYBIND_TRACE] Shutdown fail-safe restore attempt finished. " +
-                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentAfter={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}";
+                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentAfter={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
             if (s_FailSafePending)
             {
                 Mod.log.Warn(endMessage);
@@ -284,7 +316,39 @@ namespace Settings_File_Guard
                 ? (long)Math.Max(0, (DateTime.UtcNow - s_StartedUtc).TotalMilliseconds)
                 : 0;
             return
-                $"tracking={s_IsTracking}, reason={s_Reason ?? "none"}, elapsedMs={elapsedMilliseconds}, changeCount={s_ChangeCount}, snapshotCount={s_SnapshotCount}, failSafePending={s_FailSafePending}, failSafeAttempts={s_FailSafeRecoveryAttempts}";
+                $"tracking={s_IsTracking}, reason={s_Reason ?? "none"}, elapsedMs={elapsedMilliseconds}, changeCount={s_ChangeCount}, " +
+                $"episode={s_CurrentEpisodeId}:{s_CurrentEpisodeChangeCount}, snapshotCount={s_SnapshotCount}, failSafePending={s_FailSafePending}, " +
+                $"failSafeAttempts={s_FailSafeRecoveryAttempts}, settingsSessionSerial={s_LastSeenSettingsSessionSerial}, streamSessionSerial={s_LastSeenStreamSessionSerial}";
+        }
+
+        private static string ClassifyEpisodeBoundaryLocked(long gapMilliseconds, bool newSettingsSessionSeen, bool newStreamSessionSeen)
+        {
+            if (s_ChangeCount == 0)
+            {
+                return "first-change";
+            }
+
+            if (newSettingsSessionSeen && newStreamSessionSeen)
+            {
+                return "new-settings-session-and-stream";
+            }
+
+            if (newSettingsSessionSeen)
+            {
+                return "new-settings-session";
+            }
+
+            if (newStreamSessionSeen)
+            {
+                return "new-stream-session";
+            }
+
+            if (gapMilliseconds >= EpisodeGapMilliseconds)
+            {
+                return "quiet-gap";
+            }
+
+            return null;
         }
 
         private static TrackedFileState CaptureCurrentState()

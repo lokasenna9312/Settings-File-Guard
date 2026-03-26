@@ -13,6 +13,8 @@ namespace Settings_File_Guard
     {
         private const string HarmonyId = "Settings_File_Guard.SettingsFileIoTracePatches";
         private const int MaxLoggedWritesPerStream = 8;
+        private const int RecentDisposedStreamsMilliseconds = 5000;
+        private const int MaxRetainedDisposedStreams = 12;
 
         private static readonly object s_Gate = new object();
         private static readonly string s_SettingsFilePath = NormalizePath(GuardPaths.SettingsFilePath);
@@ -42,9 +44,45 @@ namespace Settings_File_Guard
             .ToArray();
 
         private static readonly Dictionary<object, TrackedStreamState> s_TrackedStreams = new Dictionary<object, TrackedStreamState>();
+        private static readonly List<TrackedStreamState> s_DisposedTrackedStreams = new List<TrackedStreamState>();
 
         private static Harmony s_Harmony;
         private static int s_NextStreamId;
+
+        public static int CurrentStreamSessionSerial
+        {
+            get
+            {
+                lock (s_Gate)
+                {
+                    return s_NextStreamId;
+                }
+            }
+        }
+
+        public static string DescribeSettingsWriteWindow()
+        {
+            lock (s_Gate)
+            {
+                DateTime nowUtc = DateTime.UtcNow;
+                PruneDisposedStreamsLocked(nowUtc);
+
+                string[] activeStreams = s_TrackedStreams.Values
+                    .OrderByDescending(state => state.LastActivityUtc)
+                    .Take(3)
+                    .Select(state => DescribeStreamState(state, nowUtc, includeDispose: false))
+                    .ToArray();
+                string[] recentDisposedStreams = s_DisposedTrackedStreams
+                    .OrderByDescending(state => state.DisposedUtc)
+                    .Take(3)
+                    .Select(state => DescribeStreamState(state, nowUtc, includeDispose: true))
+                    .ToArray();
+
+                return
+                    $"streamSessionSerial={s_NextStreamId}, activeStreams={activeStreams.Length}, recentDisposedStreams={recentDisposedStreams.Length}, " +
+                    $"active={JoinOrNone(activeStreams)}, recent={JoinOrNone(recentDisposedStreams)}";
+            }
+        }
 
         public static void Apply()
         {
@@ -135,6 +173,10 @@ namespace Settings_File_Guard
 
             lock (s_Gate)
             {
+                state.LastActivityUtc = state.OpenedUtc;
+                state.LastOperation = "Open";
+                state.LastOperationThreadId = state.OpenThreadId;
+                state.LastOperationStackTrace = state.OpenStackTrace;
                 s_TrackedStreams[stream] = state;
             }
 
@@ -160,6 +202,10 @@ namespace Settings_File_Guard
             {
                 state.WriteCount += 1;
                 state.TotalBytesWritten += count;
+                state.LastActivityUtc = DateTime.UtcNow;
+                state.LastOperation = "Write";
+                state.LastOperationThreadId = Thread.CurrentThread.ManagedThreadId;
+                state.LastOperationStackTrace = CaptureCompactStackTrace();
                 writeIndex = state.WriteCount;
                 totalBytesWritten = state.TotalBytesWritten;
 
@@ -197,6 +243,14 @@ namespace Settings_File_Guard
                 return;
             }
 
+            lock (s_Gate)
+            {
+                state.LastActivityUtc = DateTime.UtcNow;
+                state.LastOperation = "SetLength";
+                state.LastOperationThreadId = Thread.CurrentThread.ManagedThreadId;
+                state.LastOperationStackTrace = CaptureCompactStackTrace();
+            }
+
             LogTrackedEvent(
                 "Tracked FileStream.SetLength on Settings.coc.",
                 state,
@@ -208,6 +262,17 @@ namespace Settings_File_Guard
             if (!TryRemoveTrackedStreamState(__instance, out TrackedStreamState state))
             {
                 return;
+            }
+
+            lock (s_Gate)
+            {
+                state.DisposedUtc = DateTime.UtcNow;
+                state.LastActivityUtc = state.DisposedUtc;
+                state.LastOperation = "Dispose";
+                state.LastOperationThreadId = Thread.CurrentThread.ManagedThreadId;
+                state.LastOperationStackTrace = CaptureCompactStackTrace();
+                s_DisposedTrackedStreams.Add(state);
+                PruneDisposedStreamsLocked(state.DisposedUtc);
             }
 
             LogTrackedEvent(
@@ -447,6 +512,44 @@ namespace Settings_File_Guard
             }
         }
 
+        private static void PruneDisposedStreamsLocked(DateTime nowUtc)
+        {
+            s_DisposedTrackedStreams.RemoveAll(
+                stream => stream.DisposedUtc != DateTime.MinValue &&
+                          (nowUtc - stream.DisposedUtc).TotalMilliseconds > RecentDisposedStreamsMilliseconds);
+            if (s_DisposedTrackedStreams.Count <= MaxRetainedDisposedStreams)
+            {
+                return;
+            }
+
+            s_DisposedTrackedStreams.RemoveRange(0, s_DisposedTrackedStreams.Count - MaxRetainedDisposedStreams);
+        }
+
+        private static string DescribeStreamState(TrackedStreamState state, DateTime nowUtc, bool includeDispose)
+        {
+            string disposeText = includeDispose
+                ? $", disposedMsAgo={AgeMilliseconds(nowUtc, state.DisposedUtc)}"
+                : string.Empty;
+            return
+                $"stream#{state.StreamId}(ageMs={AgeMilliseconds(nowUtc, state.OpenedUtc)}, lastActivityMsAgo={AgeMilliseconds(nowUtc, state.LastActivityUtc)}, " +
+                $"lastOp={state.LastOperation ?? "none"}, lastThread={state.LastOperationThreadId}, writes={state.WriteCount}, bytes={state.TotalBytesWritten}{disposeText})";
+        }
+
+        private static long AgeMilliseconds(DateTime endUtc, DateTime startUtc)
+        {
+            if (startUtc == DateTime.MinValue || endUtc == DateTime.MinValue)
+            {
+                return -1;
+            }
+
+            return (long)Math.Max(0, (endUtc - startUtc).TotalMilliseconds);
+        }
+
+        private static string JoinOrNone(string[] values)
+        {
+            return values != null && values.Length > 0 ? string.Join(" ; ", values) : "none";
+        }
+
         private static void LogTrackedEvent(string title, TrackedStreamState state, string details)
         {
             string message =
@@ -601,6 +704,16 @@ namespace Settings_File_Guard
             public long TotalBytesWritten { get; set; }
 
             public bool SuppressedWriteLog { get; set; }
+
+            public DateTime LastActivityUtc { get; set; }
+
+            public string LastOperation { get; set; }
+
+            public int LastOperationThreadId { get; set; }
+
+            public string LastOperationStackTrace { get; set; }
+
+            public DateTime DisposedUtc { get; set; }
         }
     }
 }

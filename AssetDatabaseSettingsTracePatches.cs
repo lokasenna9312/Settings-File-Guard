@@ -14,6 +14,8 @@ namespace Settings_File_Guard
         private const string HarmonyId = "Settings_File_Guard.AssetDatabaseSettingsTracePatches";
         private const int MaxLoggedWritesPerHelper = 24;
         private const int MaxLoggedFragmentsPerHelper = 32;
+        private const int RecentCompletedSessionsMilliseconds = 5000;
+        private const int MaxRetainedCompletedSettingsSessions = 12;
 
         private static readonly object s_Gate = new object();
         private static readonly string[] s_InterestingNameFragments =
@@ -55,9 +57,48 @@ namespace Settings_File_Guard
             AccessTools.Method(s_SaveSettingsHelperType, "DisposeAsync", Type.EmptyTypes);
 
         private static readonly Dictionary<object, HelperTraceState> s_HelperStates = new Dictionary<object, HelperTraceState>();
+        private static readonly List<CompletedSettingsSession> s_CompletedSettingsSessions = new List<CompletedSettingsSession>();
 
         private static Harmony s_Harmony;
         private static int s_NextHelperId;
+        private static int s_NextSettingsSessionSerial;
+
+        public static int CurrentSettingsSessionSerial
+        {
+            get
+            {
+                lock (s_Gate)
+                {
+                    return s_NextSettingsSessionSerial;
+                }
+            }
+        }
+
+        public static string DescribeSettingsSaveWindow()
+        {
+            lock (s_Gate)
+            {
+                DateTime nowUtc = DateTime.UtcNow;
+                PruneCompletedSettingsSessionsLocked(nowUtc);
+
+                string[] activeSessions = s_HelperStates.Values
+                    .Where(state => state.CurrentSettingsSessionSerial > 0)
+                    .OrderByDescending(state => state.CurrentSettingsSessionLastActivityUtc)
+                    .Take(3)
+                    .Select(state => DescribeActiveSettingsSessionLocked(state, nowUtc))
+                    .ToArray();
+                string[] recentCompletedSessions = s_CompletedSettingsSessions
+                    .OrderByDescending(session => session.CompletedUtc)
+                    .Take(3)
+                    .Select(session => DescribeCompletedSettingsSession(session, nowUtc))
+                    .ToArray();
+
+                return
+                    $"settingsSessionSerial={s_NextSettingsSessionSerial}, activeSettingsSessions={activeSessions.Length}, " +
+                    $"recentCompletedSettingsSessions={recentCompletedSessions.Length}, active={JoinOrNone(activeSessions)}, " +
+                    $"recent={JoinOrNone(recentCompletedSessions)}";
+            }
+        }
 
         public static void Apply()
         {
@@ -164,7 +205,7 @@ namespace Settings_File_Guard
             LogAssetEvent(
                 "AssetDatabase.ProcessSingleSettingsFile entered. " +
                 $"filePath={NormalizePath(filePath) ?? "null"}, settingsCount={settingNames.Count}, settings={BuildSettingsSummary(settingNames)}, " +
-                $"helper={DescribeHelperState(helperState)}, tracking={ShutdownWriteTracker.DescribeTrackingState()}",
+                $"helper={DescribeHelperState(helperState)}, settingsWindow={DescribeSettingsSaveWindow()}, tracking={ShutdownWriteTracker.DescribeTrackingState()}",
                 logToMainLog: ShutdownWriteTracker.IsTracking || interesting);
         }
 
@@ -186,6 +227,8 @@ namespace Settings_File_Guard
             {
                 return;
             }
+
+            TouchCurrentSettingsSession(helperState, fragmentName, "GetWriteStream", countedWrite: false);
 
             LogAssetEvent(
                 "SaveSettingsHelper.GetWriteStream entered. " +
@@ -210,10 +253,16 @@ namespace Settings_File_Guard
                 return;
             }
 
+            string settingsWindow = DescribeSettingsSaveWindow();
             LogAssetEvent(
                 "SaveSettingsHelper.Dispose entered. " +
-                $"helper={DescribeHelperState(helperState)}, fragments={BuildFragmentSummary(helperState)}, tracking={ShutdownWriteTracker.DescribeTrackingState()}",
+                $"helper={DescribeHelperState(helperState)}, fragments={BuildFragmentSummary(helperState)}, settingsWindow={settingsWindow}, tracking={ShutdownWriteTracker.DescribeTrackingState()}",
                 logToMainLog: ShutdownWriteTracker.IsTracking || helperState.IsInteresting);
+
+            lock (s_Gate)
+            {
+                CompleteCurrentSettingsSessionLocked(helperState, "Dispose");
+            }
         }
 
         private static void DisposeAsyncPrefix(object __instance)
@@ -223,10 +272,16 @@ namespace Settings_File_Guard
                 return;
             }
 
+            string settingsWindow = DescribeSettingsSaveWindow();
             LogAssetEvent(
                 "SaveSettingsHelper.DisposeAsync entered. " +
-                $"helper={DescribeHelperState(helperState)}, fragments={BuildFragmentSummary(helperState)}, tracking={ShutdownWriteTracker.DescribeTrackingState()}",
+                $"helper={DescribeHelperState(helperState)}, fragments={BuildFragmentSummary(helperState)}, settingsWindow={settingsWindow}, tracking={ShutdownWriteTracker.DescribeTrackingState()}",
                 logToMainLog: ShutdownWriteTracker.IsTracking || helperState.IsInteresting);
+
+            lock (s_Gate)
+            {
+                CompleteCurrentSettingsSessionLocked(helperState, "DisposeAsync");
+            }
         }
 
         private static void LogFragmentWrite(object helper, object fragment, string line, bool isAsync)
@@ -246,6 +301,7 @@ namespace Settings_File_Guard
             }
 
             int writeCount = Interlocked.Increment(ref helperState.TotalLoggedWrites);
+            TouchCurrentSettingsSession(helperState, fragmentName, isAsync ? "WriteAsync" : "Write", countedWrite: true);
             if (writeCount > MaxLoggedWritesPerHelper)
             {
                 if (!helperState.SuppressedWriteMessageLogged)
@@ -279,10 +335,25 @@ namespace Settings_File_Guard
                     s_HelperStates[helper] = state;
                 }
 
-                state.FilePath = NormalizePath(filePath);
+                string normalizedFilePath = NormalizePath(filePath);
+                bool isMainSettingsFile = IsMainSettingsFilePath(normalizedFilePath);
+
+                if (state.CurrentSettingsSessionSerial > 0 &&
+                    !string.Equals(state.FilePath, normalizedFilePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    CompleteCurrentSettingsSessionLocked(state, "ProcessSingleSettingsFile-switch");
+                }
+
+                state.FilePath = normalizedFilePath;
                 state.SettingNames = settingNames;
                 state.IsInteresting = isInteresting;
                 state.LastUpdatedUtc = DateTime.UtcNow;
+
+                if (isMainSettingsFile)
+                {
+                    StartCurrentSettingsSessionLocked(state, normalizedFilePath, settingNames);
+                }
+
                 return state;
             }
         }
@@ -310,6 +381,158 @@ namespace Settings_File_Guard
                 state.LastUpdatedUtc = DateTime.UtcNow;
                 return count;
             }
+        }
+
+        private static void StartCurrentSettingsSessionLocked(HelperTraceState state, string normalizedFilePath, List<string> settingNames)
+        {
+            if (state.CurrentSettingsSessionSerial > 0)
+            {
+                CompleteCurrentSettingsSessionLocked(state, "ProcessSingleSettingsFile-reentry");
+            }
+
+            DateTime nowUtc = DateTime.UtcNow;
+            state.CurrentSettingsSessionSerial = Interlocked.Increment(ref s_NextSettingsSessionSerial);
+            state.CurrentSettingsSessionStartedUtc = nowUtc;
+            state.CurrentSettingsSessionLastActivityUtc = nowUtc;
+            state.CurrentSettingsSessionLastActivityKind = "ProcessSingleSettingsFile";
+            state.CurrentSettingsSessionLastFragment = "none";
+            state.CurrentSettingsSessionFilePath = normalizedFilePath;
+            state.CurrentSettingsSessionSettingNames = new List<string>(settingNames ?? new List<string>());
+            state.CurrentSettingsSessionWriteCount = 0;
+            state.CurrentSettingsSessionFragmentVisitCounts.Clear();
+        }
+
+        private static void TouchCurrentSettingsSession(HelperTraceState state, string fragmentName, string activityKind, bool countedWrite)
+        {
+            lock (s_Gate)
+            {
+                if (state.CurrentSettingsSessionSerial <= 0)
+                {
+                    return;
+                }
+
+                state.CurrentSettingsSessionLastActivityUtc = DateTime.UtcNow;
+                state.CurrentSettingsSessionLastActivityKind = activityKind;
+                state.CurrentSettingsSessionLastFragment = fragmentName ?? "null";
+
+                if (!string.IsNullOrWhiteSpace(fragmentName))
+                {
+                    if (!state.CurrentSettingsSessionFragmentVisitCounts.TryGetValue(fragmentName, out int count))
+                    {
+                        count = 0;
+                    }
+
+                    state.CurrentSettingsSessionFragmentVisitCounts[fragmentName] = count + 1;
+                }
+
+                if (countedWrite)
+                {
+                    state.CurrentSettingsSessionWriteCount += 1;
+                }
+            }
+        }
+
+        private static void CompleteCurrentSettingsSessionLocked(HelperTraceState state, string reason)
+        {
+            if (state == null || state.CurrentSettingsSessionSerial <= 0)
+            {
+                return;
+            }
+
+            DateTime nowUtc = DateTime.UtcNow;
+            s_CompletedSettingsSessions.Add(
+                new CompletedSettingsSession
+                {
+                    SessionSerial = state.CurrentSettingsSessionSerial,
+                    HelperId = state.HelperId,
+                    FilePath = state.CurrentSettingsSessionFilePath,
+                    SettingNames = new List<string>(state.CurrentSettingsSessionSettingNames),
+                    StartedUtc = state.CurrentSettingsSessionStartedUtc,
+                    LastActivityUtc = state.CurrentSettingsSessionLastActivityUtc,
+                    LastActivityKind = state.CurrentSettingsSessionLastActivityKind,
+                    LastFragment = state.CurrentSettingsSessionLastFragment,
+                    WriteCount = state.CurrentSettingsSessionWriteCount,
+                    FragmentVisitCounts = new Dictionary<string, int>(state.CurrentSettingsSessionFragmentVisitCounts, StringComparer.Ordinal),
+                    CompletedUtc = nowUtc,
+                    CompletedReason = reason,
+                });
+            PruneCompletedSettingsSessionsLocked(nowUtc);
+
+            state.CurrentSettingsSessionSerial = 0;
+            state.CurrentSettingsSessionStartedUtc = DateTime.MinValue;
+            state.CurrentSettingsSessionLastActivityUtc = DateTime.MinValue;
+            state.CurrentSettingsSessionLastActivityKind = null;
+            state.CurrentSettingsSessionLastFragment = null;
+            state.CurrentSettingsSessionFilePath = null;
+            state.CurrentSettingsSessionSettingNames = new List<string>();
+            state.CurrentSettingsSessionWriteCount = 0;
+            state.CurrentSettingsSessionFragmentVisitCounts.Clear();
+        }
+
+        private static void PruneCompletedSettingsSessionsLocked(DateTime nowUtc)
+        {
+            s_CompletedSettingsSessions.RemoveAll(
+                session => (nowUtc - session.CompletedUtc).TotalMilliseconds > RecentCompletedSessionsMilliseconds);
+            if (s_CompletedSettingsSessions.Count <= MaxRetainedCompletedSettingsSessions)
+            {
+                return;
+            }
+
+            s_CompletedSettingsSessions.RemoveRange(0, s_CompletedSettingsSessions.Count - MaxRetainedCompletedSettingsSessions);
+        }
+
+        private static string DescribeActiveSettingsSessionLocked(HelperTraceState state, DateTime nowUtc)
+        {
+            return
+                $"session#{state.CurrentSettingsSessionSerial}(helper={state.HelperId}, ageMs={AgeMilliseconds(nowUtc, state.CurrentSettingsSessionStartedUtc)}, " +
+                $"lastActivityMsAgo={AgeMilliseconds(nowUtc, state.CurrentSettingsSessionLastActivityUtc)}, lastKind={state.CurrentSettingsSessionLastActivityKind ?? "none"}, " +
+                $"lastFragment={state.CurrentSettingsSessionLastFragment ?? "none"}, writes={state.CurrentSettingsSessionWriteCount}, fragments={BuildCurrentSettingsSessionFragmentSummaryLocked(state)})";
+        }
+
+        private static string DescribeCompletedSettingsSession(CompletedSettingsSession session, DateTime nowUtc)
+        {
+            return
+                $"session#{session.SessionSerial}(helper={session.HelperId}, completedMsAgo={AgeMilliseconds(nowUtc, session.CompletedUtc)}, " +
+                $"durationMs={AgeMilliseconds(session.CompletedUtc, session.StartedUtc)}, completion={session.CompletedReason}, " +
+                $"lastKind={session.LastActivityKind ?? "none"}, lastFragment={session.LastFragment ?? "none"}, writes={session.WriteCount}, " +
+                $"fragments={BuildFragmentSummary(session.FragmentVisitCounts)})";
+        }
+
+        private static string BuildCurrentSettingsSessionFragmentSummaryLocked(HelperTraceState state)
+        {
+            return BuildFragmentSummary(state.CurrentSettingsSessionFragmentVisitCounts);
+        }
+
+        private static string BuildFragmentSummary(Dictionary<string, int> fragmentVisitCounts)
+        {
+            if (fragmentVisitCounts == null || fragmentVisitCounts.Count == 0)
+            {
+                return "none";
+            }
+
+            return string.Join(
+                " | ",
+                fragmentVisitCounts
+                    .OrderByDescending(entry => entry.Value)
+                    .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+                    .Take(4)
+                    .Select(entry => $"{entry.Key}={entry.Value}")
+                    .ToArray());
+        }
+
+        private static long AgeMilliseconds(DateTime endUtc, DateTime startUtc)
+        {
+            if (startUtc == DateTime.MinValue || endUtc == DateTime.MinValue)
+            {
+                return -1;
+            }
+
+            return (long)Math.Max(0, (endUtc - startUtc).TotalMilliseconds);
+        }
+
+        private static string JoinOrNone(string[] values)
+        {
+            return values != null && values.Length > 0 ? string.Join(" ; ", values) : "none";
         }
 
         private static void PatchIfPresent(MethodBase method, string prefixMethodName)
@@ -398,7 +621,7 @@ namespace Settings_File_Guard
 
             return
                 $"id={helperState.HelperId}, filePath={helperState.FilePath ?? "null"}, settings={BuildSettingsSummary(helperState.SettingNames)}, " +
-                $"interesting={helperState.IsInteresting}, writesLogged={helperState.TotalLoggedWrites}";
+                $"interesting={helperState.IsInteresting}, writesLogged={helperState.TotalLoggedWrites}, settingsSession={helperState.CurrentSettingsSessionSerial}";
         }
 
         private static List<string> ExtractSettingNames(IEnumerable settingsInFile)
@@ -437,6 +660,16 @@ namespace Settings_File_Guard
                    normalized.EndsWith(Path.DirectorySeparatorChar + "Settings.coc", StringComparison.OrdinalIgnoreCase) ||
                    normalized.EndsWith(Path.AltDirectorySeparatorChar + "Settings.coc", StringComparison.OrdinalIgnoreCase) ||
                    normalized.EndsWith("Settings.coc", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsMainSettingsFilePath(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return false;
+            }
+
+            return string.Equals(NormalizePath(filePath), NormalizePath(GuardPaths.SettingsFilePath), StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsInterestingText(string text)
@@ -560,6 +793,53 @@ namespace Settings_File_Guard
 
             public Dictionary<string, int> FragmentVisitCounts { get; } =
                 new Dictionary<string, int>(StringComparer.Ordinal);
+
+            public int CurrentSettingsSessionSerial { get; set; }
+
+            public DateTime CurrentSettingsSessionStartedUtc { get; set; }
+
+            public DateTime CurrentSettingsSessionLastActivityUtc { get; set; }
+
+            public string CurrentSettingsSessionLastActivityKind { get; set; }
+
+            public string CurrentSettingsSessionLastFragment { get; set; }
+
+            public string CurrentSettingsSessionFilePath { get; set; }
+
+            public List<string> CurrentSettingsSessionSettingNames { get; set; } = new List<string>();
+
+            public int CurrentSettingsSessionWriteCount { get; set; }
+
+            public Dictionary<string, int> CurrentSettingsSessionFragmentVisitCounts { get; } =
+                new Dictionary<string, int>(StringComparer.Ordinal);
+        }
+
+        private sealed class CompletedSettingsSession
+        {
+            public int SessionSerial { get; set; }
+
+            public int HelperId { get; set; }
+
+            public string FilePath { get; set; }
+
+            public List<string> SettingNames { get; set; } = new List<string>();
+
+            public DateTime StartedUtc { get; set; }
+
+            public DateTime LastActivityUtc { get; set; }
+
+            public string LastActivityKind { get; set; }
+
+            public string LastFragment { get; set; }
+
+            public int WriteCount { get; set; }
+
+            public Dictionary<string, int> FragmentVisitCounts { get; set; } =
+                new Dictionary<string, int>(StringComparer.Ordinal);
+
+            public DateTime CompletedUtc { get; set; }
+
+            public string CompletedReason { get; set; }
         }
     }
 }
