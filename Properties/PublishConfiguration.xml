@@ -1,51 +1,62 @@
 <Publish>
+	<!-- Leave ModId empty for the first PDX upload. Fill it after the first upload assigns the ModId. -->
 	<ModId Value="" />
 	<DisplayName Value="Settings File Guard" />
-	<ShortDescription Value="Protects the global Settings.coc file from keybinding-save corruption and restores a healthy backup when needed." />
+	<ShortDescription Value="Background safeguard for the global Settings.coc file. Suppresses keybinding-save corruption and restores a healthy backup when needed." />
 	<LongDescription>
 Settings File Guard is a standalone utility mod for Cities: Skylines II.
 
 It is designed to reduce damage from the known global keybinding/settings save failure.
 
+v1 works in the background only and does not include a settings UI.
+
 What it does:
-- Suppresses the known `KeybindingSettings.bindings` save failure during global settings save
-- Backs up a healthy `Settings.coc`
-- Restores the backup when the current `Settings.coc` looks corrupted or loses keybinding entries
+- Suppresses the known KeybindingSettings.bindings save failure during global settings save
+- Seeds and updates a healthy Settings.coc backup when the current file looks valid
+- Restores the backup on startup when the current Settings.coc looks corrupted or loses keybinding entries
+- Preserves the broken file as a Settings.coc.settings_guard.corrupt.*.bak snapshot before restore
 
 What it does not do:
 - It does not protect sessions where all code mods are disabled
 - It does not modify savegame data
 - It does not add a settings UI
+- It cannot restore anything until a healthy backup has been created at least once
 
 Files created by this mod:
-- Backup: `Settings.coc.settings_file_guard.bak`
-- Corrupt snapshot: `Settings.coc.settings_guard.corrupt.*.bak`
+- Location: the game's user data directory
+- Backup: Settings.coc.settings_file_guard.bak
+- Corrupt snapshot: Settings.coc.settings_guard.corrupt.*.bak
 
 이 모드는 시티즈: 스카이라인 2의 전역 설정 파일 `Settings.coc`를 보호하기 위한 독립 유틸리티 모드입니다.
 
 알려진 키바인딩/전역 설정 저장 실패로 인해 설정 파일이 손상되는 현상을 완화하는 것이 목적입니다.
 
+v1은 UI 없는 백그라운드 보호 모드입니다.
+
 기능:
-- 전역 설정 저장 중 알려진 `KeybindingSettings.bindings` 예외를 우회합니다
-- 건강한 `Settings.coc`를 백업합니다
-- 현재 `Settings.coc`가 손상되었거나 키바인딩 항목을 잃어버린 경우 백업본으로 복원합니다
+- 전역 설정 저장 중 알려진 KeybindingSettings.bindings 예외를 우회합니다
+- 현재 파일이 정상으로 보일 때 건강한 Settings.coc 백업을 생성하고 갱신합니다
+- 시작 시 현재 Settings.coc가 손상되었거나 키바인딩 항목을 잃어버린 경우 백업본으로 복원합니다
+- 복원 전에 손상된 파일을 Settings.coc.settings_guard.corrupt.*.bak 스냅샷으로 남깁니다
 
 제한:
 - 모든 코드 모드를 끈 상태까지 보호하지는 못합니다
 - 세이브파일 데이터는 수정하지 않습니다
 - 설정 UI는 제공하지 않습니다
+- 최소 한 번은 건강한 백업이 만들어져 있어야 복원이 가능합니다
 
 생성 파일:
-- 백업: `Settings.coc.settings_file_guard.bak`
-- 손상 스냅샷: `Settings.coc.settings_guard.corrupt.*.bak`
+- 위치: 게임 사용자 데이터 디렉터리
+- 백업: Settings.coc.settings_file_guard.bak
+- 손상 스냅샷: Settings.coc.settings_guard.corrupt.*.bak
 	</LongDescription>
 	<ModVersion Value="1.0.0" />
 	<GameVersion Value="1.5.6f1" />
 	<ChangeLog>
 - First public release of Settings File Guard.
-- Added keybinding-save failure suppression during global settings save.
-- Added healthy Settings.coc backup and restore flow.
-- Empty bindings arrays are treated as corrupted and are not used as healthy backup seeds.
+- Added background protection for known keybinding-save corruption.
+- Added healthy Settings.coc backup, corruption snapshot, and restore flow.
+- Recovery is limited to cases where a healthy backup already exists.
 	</ChangeLog>
 	<AccessLevel Value="Public" />
 </Publish>

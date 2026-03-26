@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading;
+using UnityEngine;
 
 namespace Settings_File_Guard
 {
@@ -92,13 +93,24 @@ namespace Settings_File_Guard
             }
         }
 
-        private static string SettingsDirectoryPath =>
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                "AppData",
-                "LocalLow",
-                "Colossal Order",
-                "Cities Skylines II");
+        private static string SettingsDirectoryPath
+        {
+            get
+            {
+                string persistentDataPath = Application.persistentDataPath;
+                if (!string.IsNullOrWhiteSpace(persistentDataPath))
+                {
+                    return persistentDataPath;
+                }
+
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    "AppData",
+                    "LocalLow",
+                    "Colossal Order",
+                    "Cities Skylines II");
+            }
+        }
 
         private static string SettingsFilePath => Path.Combine(SettingsDirectoryPath, "Settings.coc");
 
