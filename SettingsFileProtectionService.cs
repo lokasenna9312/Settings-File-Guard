@@ -18,6 +18,38 @@ namespace Settings_File_Guard
         private static readonly object s_FileGate = new object();
         private static bool s_LoggedMissingHealthyBackup;
 
+        internal enum RestoreAttemptOutcome
+        {
+            NoHealthyBackup,
+            Skipped,
+            Restored,
+            DeferredSharingViolation,
+            Failed,
+        }
+
+        internal readonly struct RestoreAttemptResult
+        {
+            public RestoreAttemptResult(
+                RestoreAttemptOutcome outcome,
+                string currentDescription,
+                bool currentHasHardRestoreFailure,
+                string detail = null)
+            {
+                Outcome = outcome;
+                CurrentDescription = currentDescription ?? "unknown";
+                CurrentHasHardRestoreFailure = currentHasHardRestoreFailure;
+                Detail = detail;
+            }
+
+            public RestoreAttemptOutcome Outcome { get; }
+
+            public string CurrentDescription { get; }
+
+            public bool CurrentHasHardRestoreFailure { get; }
+
+            public string Detail { get; }
+        }
+
         public static void BackupHealthySettingsFile(string reason)
         {
             lock (s_FileGate)
@@ -87,6 +119,11 @@ namespace Settings_File_Guard
 
         public static void RestoreBackupIfCurrentLooksCorrupted(string reason)
         {
+            TryRestoreBackupIfCurrentLooksCorrupted(reason);
+        }
+
+        internal static RestoreAttemptResult TryRestoreBackupIfCurrentLooksCorrupted(string reason)
+        {
             lock (s_FileGate)
             {
                 try
@@ -111,7 +148,11 @@ namespace Settings_File_Guard
                             $"restore-missing-candidate-{reason}",
                             GuardPaths.SettingsFilePath,
                             currentAnalysis.Describe());
-                        return;
+                        return new RestoreAttemptResult(
+                            RestoreAttemptOutcome.NoHealthyBackup,
+                            currentAnalysis.Describe(),
+                            currentAnalysis.HasHardRestoreFailure,
+                            candidateSummary);
                     }
 
                     s_LoggedMissingHealthyBackup = false;
@@ -147,7 +188,11 @@ namespace Settings_File_Guard
                                 $"Restore skipped because current Settings.coc looks healthy enough. reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.DescribeCompact()}");
                         }
 
-                        return;
+                        return new RestoreAttemptResult(
+                            RestoreAttemptOutcome.Skipped,
+                            currentAnalysis.Describe(),
+                            currentAnalysis.HasHardRestoreFailure,
+                            bestHealthyBackup.DescribeCompact());
                     }
 
                     if (!currentAnalysis.HasHardRestoreFailure)
@@ -169,7 +214,11 @@ namespace Settings_File_Guard
                             "RESTORE",
                             "Conservative restore skip: current Settings.coc is suspicious or incomplete but did not meet the hard-restore threshold. " +
                             $"reason={reason}, current={currentAnalysis.Describe()}, strongestHealthy={bestHealthyBackup.Describe()}");
-                        return;
+                        return new RestoreAttemptResult(
+                            RestoreAttemptOutcome.Skipped,
+                            currentAnalysis.Describe(),
+                            currentAnalysis.HasHardRestoreFailure,
+                            bestHealthyBackup.DescribeCompact());
                     }
 
                     Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
@@ -183,7 +232,10 @@ namespace Settings_File_Guard
                             $"restore-current-before-replace-{reason}",
                             GuardPaths.SettingsFilePath,
                             currentAnalysis.Describe());
-                        SafeCopyWithRetries(GuardPaths.SettingsFilePath, corruptSnapshotPath, overwrite: true);
+                        TryCaptureCorruptSnapshotBeforeRestore(
+                            currentAnalysis,
+                            corruptSnapshotPath,
+                            reason);
                     }
 
                     GuardDiagnostics.DumpFileSnapshot(
@@ -191,14 +243,47 @@ namespace Settings_File_Guard
                         $"restore-selected-backup-{reason}",
                         bestHealthyBackup.FilePath,
                         bestHealthyBackup.Describe());
-                    SafeCopyWithRetries(bestHealthyBackup.FilePath, GuardPaths.SettingsFilePath, overwrite: true);
+
+                    try
+                    {
+                        SafeCopyWithRetries(
+                            bestHealthyBackup.FilePath,
+                            GuardPaths.SettingsFilePath,
+                            overwrite: true,
+                            maxAttempts: 1,
+                            retryDelayMilliseconds: 0);
+                    }
+                    catch (IOException ex) when (IsSharingViolation(ex))
+                    {
+                        SettingsFileAnalysis currentAfterLockFailure = AnalyzeSettingsFile(GuardPaths.SettingsFilePath);
+                        string currentAfterAttemptDescription = currentAfterLockFailure.Describe();
+                        string lockMessage =
+                            "[KEYBIND_BACKUP] Deferred restore because Settings.coc is still locked. " +
+                            $"reason={reason}, chosenHealthy={bestHealthyBackup.DescribeCompact()}, currentAfterAttempt={currentAfterAttemptDescription}, sharingViolation={ex.Message}";
+                        Mod.log.Warn(lockMessage);
+                        GuardDiagnostics.WriteEvent("RESTORE", lockMessage);
+                        return new RestoreAttemptResult(
+                            RestoreAttemptOutcome.DeferredSharingViolation,
+                            currentAfterAttemptDescription,
+                            currentAfterLockFailure.HasHardRestoreFailure,
+                            ex.Message);
+                    }
+
+                    SettingsFileAnalysis currentAfterRestore = AnalyzeSettingsFile(GuardPaths.SettingsFilePath);
+                    string currentAfterRestoreDescription = currentAfterRestore.Describe();
+
                     Mod.log.Warn(
-                        $"[KEYBIND_BACKUP] Restored Settings.coc from backup. reason={reason}, chosenHealthy={bestHealthyBackup.Describe()}, currentBeforeRestore={currentAnalysis.Describe()}, corruptSnapshot={corruptSnapshotPath ?? "none"}, candidates={candidateSummary}");
+                        $"[KEYBIND_BACKUP] Restored Settings.coc from backup. reason={reason}, chosenHealthy={bestHealthyBackup.Describe()}, currentBeforeRestore={currentAnalysis.Describe()}, currentAfterRestore={currentAfterRestoreDescription}, corruptSnapshot={corruptSnapshotPath ?? "none"}, candidates={candidateSummary}");
                     GuardDiagnostics.DumpFileSnapshot(
                         "RESTORE",
                         $"restore-current-after-replace-{reason}",
                         GuardPaths.SettingsFilePath,
                         "Captured after restoring Settings.coc from the selected healthy backup.");
+                    return new RestoreAttemptResult(
+                        RestoreAttemptOutcome.Restored,
+                        currentAfterRestoreDescription,
+                        currentAfterRestore.HasHardRestoreFailure,
+                        bestHealthyBackup.DescribeCompact());
                 }
                 catch (Exception ex)
                 {
@@ -206,11 +291,15 @@ namespace Settings_File_Guard
                     GuardDiagnostics.WriteEvent(
                         "RESTORE",
                         $"RestoreBackupIfCurrentLooksCorrupted failed. reason={reason}, exception={ex}");
+                    SettingsFileAnalysis currentAfterFailure = AnalyzeSettingsFile(GuardPaths.SettingsFilePath);
+                    return new RestoreAttemptResult(
+                        RestoreAttemptOutcome.Failed,
+                        currentAfterFailure.Describe(),
+                        currentAfterFailure.HasHardRestoreFailure,
+                        ex.GetType().Name);
                 }
             }
         }
-
-        private static string BackupFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, BackupFileName);
 
         internal static string DescribeSettingsFileForDiagnostics(string path)
         {
@@ -231,6 +320,23 @@ namespace Settings_File_Guard
                 return analysis.HasHardRestoreFailure;
             }
         }
+
+        internal static bool IsSharingViolation(IOException exception)
+        {
+            if (exception == null)
+            {
+                return false;
+            }
+
+            const int sharingViolationHResult = unchecked((int)0x80070020);
+            const int lockViolationHResult = unchecked((int)0x80070021);
+            return exception.HResult == sharingViolationHResult ||
+                   exception.HResult == lockViolationHResult ||
+                   exception.Message.IndexOf("sharing violation", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   exception.Message.IndexOf("being used by another process", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string BackupFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, BackupFileName);
 
         private static SettingsFileAnalysis AnalyzeSettingsFile(string path)
         {
@@ -480,7 +586,16 @@ namespace Settings_File_Guard
 
         private static void SafeCopyWithRetries(string sourcePath, string destinationPath, bool overwrite)
         {
-            const int maxAttempts = 5;
+            SafeCopyWithRetries(sourcePath, destinationPath, overwrite, maxAttempts: 5, retryDelayMilliseconds: 50);
+        }
+
+        private static void SafeCopyWithRetries(
+            string sourcePath,
+            string destinationPath,
+            bool overwrite,
+            int maxAttempts,
+            int retryDelayMilliseconds)
+        {
             for (int attempt = 1; attempt <= maxAttempts; attempt += 1)
             {
                 try
@@ -490,11 +605,33 @@ namespace Settings_File_Guard
                 }
                 catch when (attempt < maxAttempts)
                 {
-                    Thread.Sleep(50);
+                    if (retryDelayMilliseconds > 0)
+                    {
+                        Thread.Sleep(retryDelayMilliseconds);
+                    }
                 }
             }
 
             File.Copy(sourcePath, destinationPath, overwrite);
+        }
+
+        private static void TryCaptureCorruptSnapshotBeforeRestore(
+            SettingsFileAnalysis currentAnalysis,
+            string corruptSnapshotPath,
+            string reason)
+        {
+            try
+            {
+                SafeCopyWithRetries(GuardPaths.SettingsFilePath, corruptSnapshotPath, overwrite: true);
+            }
+            catch (IOException ex) when (IsSharingViolation(ex))
+            {
+                string message =
+                    "[KEYBIND_BACKUP] Skipped corrupt snapshot because Settings.coc was still locked during restore. " +
+                    $"reason={reason}, current={currentAnalysis.Describe()}, corruptSnapshot={corruptSnapshotPath}, sharingViolation={ex.Message}";
+                Mod.log.Warn(message);
+                GuardDiagnostics.WriteEvent("RESTORE", message);
+            }
         }
 
         private sealed class SettingsFileAnalysis
