@@ -6,7 +6,7 @@ namespace Settings_File_Guard
 {
     internal static class GuardDiagnostics
     {
-        private const string ToggleFileName = "Settings_File_Guard.DeepDiagnostics.enabled";
+        private const string LegacyToggleFileName = "Settings_File_Guard.DeepDiagnostics.enabled";
         private const int SnapshotHeadLineCount = 80;
         private const int SnapshotTailLineCount = 40;
         private const int SnapshotFocusContextBefore = 20;
@@ -18,7 +18,8 @@ namespace Settings_File_Guard
         private static readonly object s_Gate = new object();
 
         private static bool s_Initialized;
-        private static bool s_IsEnabled;
+        private static bool s_HasLastKnownEnabledState;
+        private static bool s_LastKnownEnabledState;
         private static string s_SessionId;
         private static string s_LogFilePath;
         private static string s_SnapshotDirectoryPath;
@@ -28,11 +29,26 @@ namespace Settings_File_Guard
             get
             {
                 EnsureInitialized();
-                return s_IsEnabled;
+                lock (s_Gate)
+                {
+                    return GetCurrentEnabledStateCore();
+                }
             }
         }
 
-        public static string ToggleFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, ToggleFileName);
+        public static string LegacyToggleFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, LegacyToggleFileName);
+
+        public static bool GetDefaultDeepDiagnosticsEnabled()
+        {
+            try
+            {
+                return File.Exists(LegacyToggleFilePath);
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         public static void Initialize()
         {
@@ -46,6 +62,7 @@ namespace Settings_File_Guard
                 return;
             }
 
+            EnsureArtifactsInitialized();
             AppendLogLine(category, message);
         }
 
@@ -55,6 +72,8 @@ namespace Settings_File_Guard
             {
                 return;
             }
+
+            EnsureArtifactsInitialized();
 
             try
             {
@@ -113,32 +132,77 @@ namespace Settings_File_Guard
                 }
 
                 s_SessionId = DateTime.Now.ToString("yyyyMMdd_HHmmssfff");
-                s_IsEnabled = File.Exists(ToggleFilePath);
+                bool isEnabled = GetCurrentEnabledStateCore();
 
-                if (s_IsEnabled)
+                if (isEnabled)
                 {
-                    Directory.CreateDirectory(GuardPaths.LogsDirectoryPath);
-                    s_LogFilePath = Path.Combine(
-                        GuardPaths.LogsDirectoryPath,
-                        $"Settings_File_Guard.DeepDiagnostics.{s_SessionId}.log");
-                    s_SnapshotDirectoryPath = Path.Combine(
-                        GuardPaths.LogsDirectoryPath,
-                        $"Settings_File_Guard.DeepDiagnostics.{s_SessionId}");
-                    Directory.CreateDirectory(s_SnapshotDirectoryPath);
-                    AppendLogLine(
-                        "SYSTEM",
-                        $"Deep diagnostics enabled. session={s_SessionId}, toggleFile={ToggleFilePath}, snapshotDirectory={s_SnapshotDirectoryPath}");
+                    EnsureArtifactsInitializedCore();
                 }
 
                 s_Initialized = true;
                 Mod.log.Info(
-                    $"[KEYBIND_DIAGNOSTICS] Deep diagnostics {(s_IsEnabled ? "enabled" : "disabled")}. session={s_SessionId}, toggleFile={ToggleFilePath}, logPath={s_LogFilePath ?? "none"}");
+                    $"[KEYBIND_DIAGNOSTICS] Deep diagnostics {(isEnabled ? "enabled" : "disabled")}. session={s_SessionId}, legacyToggleFile={LegacyToggleFilePath}, logPath={s_LogFilePath ?? "none"}");
             }
         }
 
         private static void AppendLogLine(string category, string message)
         {
             lock (s_Gate)
+            {
+                EnsureArtifactsInitializedCore();
+                AppendLogLineCore(category, message);
+            }
+        }
+
+        private static bool GetCurrentEnabledStateCore()
+        {
+            if (Mod.Settings != null)
+            {
+                s_LastKnownEnabledState = Mod.Settings.EnableDeepDiagnostics;
+                s_HasLastKnownEnabledState = true;
+                return s_LastKnownEnabledState;
+            }
+
+            if (!s_HasLastKnownEnabledState)
+            {
+                s_LastKnownEnabledState = GetDefaultDeepDiagnosticsEnabled();
+                s_HasLastKnownEnabledState = true;
+            }
+
+            return s_LastKnownEnabledState;
+        }
+
+        private static void EnsureArtifactsInitialized()
+        {
+            lock (s_Gate)
+            {
+                EnsureArtifactsInitializedCore();
+            }
+        }
+
+        private static void EnsureArtifactsInitializedCore()
+        {
+            if (!string.IsNullOrWhiteSpace(s_LogFilePath))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(GuardPaths.LogsDirectoryPath);
+            s_LogFilePath = Path.Combine(
+                GuardPaths.LogsDirectoryPath,
+                $"Settings_File_Guard.DeepDiagnostics.{s_SessionId}.log");
+            s_SnapshotDirectoryPath = Path.Combine(
+                GuardPaths.LogsDirectoryPath,
+                $"Settings_File_Guard.DeepDiagnostics.{s_SessionId}");
+            Directory.CreateDirectory(s_SnapshotDirectoryPath);
+            AppendLogLineCore(
+                "SYSTEM",
+                $"Deep diagnostics enabled. session={s_SessionId}, legacyToggleFile={LegacyToggleFilePath}, snapshotDirectory={s_SnapshotDirectoryPath}");
+        }
+
+        private static void AppendLogLineCore(string category, string message)
+        {
+            try
             {
                 try
                 {
@@ -152,6 +216,11 @@ namespace Settings_File_Guard
                     Mod.log.Warn(
                         $"[KEYBIND_DIAGNOSTICS] Failed to append deep diagnostics log. category={category}, reason={ex.GetType().Name}: {ex.Message}");
                 }
+            }
+            catch (Exception ex)
+            {
+                Mod.log.Warn(
+                    $"[KEYBIND_DIAGNOSTICS] Failed to prepare deep diagnostics log. category={category}, reason={ex.GetType().Name}: {ex.Message}");
             }
         }
 

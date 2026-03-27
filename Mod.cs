@@ -1,9 +1,11 @@
 using System;
 using System.IO;
 using System.Reflection;
+using Colossal.IO.AssetDatabase;
 using Colossal.Logging;
 using Game;
 using Game.Modding;
+using Game.SceneFlow;
 
 namespace Settings_File_Guard
 {
@@ -12,9 +14,18 @@ namespace Settings_File_Guard
         public static readonly ILog log =
             LogManager.GetLogger($"{nameof(Settings_File_Guard)}.{nameof(Mod)}").SetShowsErrorsInUI(false);
 
+        public static Setting Settings { get; private set; }
+
+        private Setting m_Setting;
+
         public void OnLoad(UpdateSystem updateSystem)
         {
             GuardPaths.Initialize();
+            m_Setting = new Setting(this);
+            AssetDatabase.global.LoadSettings(nameof(Settings_File_Guard), m_Setting, new Setting(this));
+            Settings = m_Setting;
+            RegisterLocalization();
+            m_Setting.RegisterInOptionsUI();
             GuardDiagnostics.Initialize();
             ShutdownWriteTracker.Initialize();
             log.Info(nameof(OnLoad));
@@ -60,6 +71,13 @@ namespace Settings_File_Guard
                 "Captured at mod OnDispose after pre-dispose backup.");
             log.Info("[KEYBIND_GUARD] Leaving guard patches applied until process exit to protect async settings-save after OnDispose.");
             ShutdownWriteTracker.NoteCheckpoint("OnDispose completion");
+
+            if (m_Setting != null)
+            {
+                m_Setting.UnregisterInOptionsUI();
+                m_Setting = null;
+                Settings = null;
+            }
         }
 
         private static void LogLoadedBuildIdentity()
@@ -101,6 +119,17 @@ namespace Settings_File_Guard
 
             log.Info(message);
             GuardDiagnostics.WriteEvent("SYSTEM", message);
+        }
+
+        private void RegisterLocalization()
+        {
+            if (m_Setting == null || GameManager.instance?.localizationManager == null)
+            {
+                return;
+            }
+
+            GameManager.instance.localizationManager.AddSource("en-US", new LocaleEN(m_Setting));
+            GameManager.instance.localizationManager.AddSource("ko-KR", new LocaleKO(m_Setting));
         }
     }
 }
