@@ -90,10 +90,11 @@ namespace Settings_File_Guard
                 s_LastSeenSettingsSessionSerial = AssetDatabaseSettingsTracePatches.CurrentSettingsSessionSerial;
                 s_LastSeenStreamSessionSerial = SettingsFileIoTracePatches.CurrentStreamSessionSerial;
                 s_LastObservedState = CaptureCurrentState();
+                SettingsDirectoryTraceWatcher.Arm(reason);
                 s_Timer = new Timer(PollForLateWrites, null, PollIntervalMilliseconds, PollIntervalMilliseconds);
 
                 string message =
-                    $"[KEYBIND_TRACE] Armed shutdown write tracking. reason={reason}, state={DescribeTrackingStateLocked()}, baseline={s_LastObservedState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                    $"[KEYBIND_TRACE] Armed shutdown write tracking. reason={reason}, state={DescribeTrackingStateLocked()}, baseline={s_LastObservedState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
                 Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                 DumpSnapshotIfPossible("shutdown-track-armed", s_LastObservedState);
@@ -133,7 +134,7 @@ namespace Settings_File_Guard
                 TryRunFailSafeRecoveryLocked($"terminal-{phase}", ignoreQuietPeriod: true);
                 TrackedFileState currentState = CaptureCurrentState();
                 string message =
-                    $"[KEYBIND_TRACE] Shutdown lifecycle event. phase={phase}, state={DescribeTrackingStateLocked()}, current={currentState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                    $"[KEYBIND_TRACE] Shutdown lifecycle event. phase={phase}, state={DescribeTrackingStateLocked()}, current={currentState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
                 Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                 DumpSnapshotIfPossible($"shutdown-track-{phase}", currentState);
@@ -174,11 +175,12 @@ namespace Settings_File_Guard
                     s_FailSafePending = true;
                     string saveWindow = AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow();
                     string streamWindow = SettingsFileIoTracePatches.DescribeSettingsWriteWindow();
+                    string directoryWindow = SettingsDirectoryTraceWatcher.DescribeRecentActivity();
                     string message =
                         "[KEYBIND_TRACE] Detected Settings.coc change during shutdown tracking. " +
                         $"state={DescribeTrackingStateLocked()}, episode={s_CurrentEpisodeId}:{s_CurrentEpisodeChangeCount}, episodeReason={episodeReason ?? "same-episode"}, " +
                         $"gapMs={gapMilliseconds}, newSettingsSessionSeen={newSettingsSessionSeen}, newStreamSessionSeen={newStreamSessionSeen}, " +
-                        $"saveWindow={saveWindow}, streamWindow={streamWindow}, previous={s_LastObservedState}, current={currentState}";
+                        $"saveWindow={saveWindow}, streamWindow={streamWindow}, directoryWindow={directoryWindow}, previous={s_LastObservedState}, current={currentState}";
                     Mod.log.Warn(message);
                     GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                     DumpSnapshotIfPossible($"shutdown-track-change-{s_ChangeCount:00}", currentState);
@@ -193,7 +195,7 @@ namespace Settings_File_Guard
                 {
                     TryRunFailSafeRecoveryLocked("timeout", ignoreQuietPeriod: true);
                     string message =
-                        $"[KEYBIND_TRACE] Shutdown write tracking expired. state={DescribeTrackingStateLocked()}, final={s_LastObservedState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                        $"[KEYBIND_TRACE] Shutdown write tracking expired. state={DescribeTrackingStateLocked()}, final={s_LastObservedState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
                     Mod.log.Info(message);
                     GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
                     StopTrackingTimer();
@@ -208,7 +210,7 @@ namespace Settings_File_Guard
             s_LastObservedState = currentState;
 
             string message =
-                $"[KEYBIND_TRACE] Updated shutdown tracking checkpoint. source={source}, state={DescribeTrackingStateLocked()}, current={currentState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                $"[KEYBIND_TRACE] Updated shutdown tracking checkpoint. source={source}, state={DescribeTrackingStateLocked()}, current={currentState}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
             Mod.log.Info(message);
             GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", message);
             DumpSnapshotIfPossible($"shutdown-track-{SanitizeLabel(source)}", currentState);
@@ -225,7 +227,7 @@ namespace Settings_File_Guard
             {
                 string exhaustedMessage =
                     "[KEYBIND_TRACE] Shutdown fail-safe reached the maximum recovery attempts and will stop retrying. " +
-                    $"trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                    $"trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
                 Mod.log.Warn(exhaustedMessage);
                 GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", exhaustedMessage);
                 s_FailSafePending = false;
@@ -245,7 +247,7 @@ namespace Settings_File_Guard
                 {
                     string skipMessage =
                         "[KEYBIND_TRACE] Shutdown fail-safe skipped automatic restore because the file stabilized " +
-                        $"without meeting the hard-restore threshold. trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                        $"without meeting the hard-restore threshold. trigger={trigger}, state={DescribeTrackingStateLocked()}, current={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
                     Mod.log.Info(skipMessage);
                     GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", skipMessage);
                     s_FailSafePending = false;
@@ -259,7 +261,7 @@ namespace Settings_File_Guard
             string beforeDescription = SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath);
             string beginMessage =
                 "[KEYBIND_TRACE] Shutdown fail-safe is attempting restore from healthy backup. " +
-                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentBefore={beforeDescription}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentBefore={beforeDescription}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
             Mod.log.Warn(beginMessage);
             GuardDiagnostics.WriteEvent("SHUTDOWN_TRACE", beginMessage);
             DumpSnapshotIfPossible($"shutdown-failsafe-before-{s_FailSafeRecoveryAttempts:00}", CaptureCurrentState());
@@ -273,7 +275,7 @@ namespace Settings_File_Guard
 
             string endMessage =
                 "[KEYBIND_TRACE] Shutdown fail-safe restore attempt finished. " +
-                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentAfter={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}";
+                $"reason={reason}, state={DescribeTrackingStateLocked()}, currentAfter={SettingsFileProtectionService.DescribeSettingsFileForDiagnostics(GuardPaths.SettingsFilePath)}, saveWindow={AssetDatabaseSettingsTracePatches.DescribeSettingsSaveWindow()}, streamWindow={SettingsFileIoTracePatches.DescribeSettingsWriteWindow()}, directoryWindow={SettingsDirectoryTraceWatcher.DescribeRecentActivity()}";
             if (s_FailSafePending)
             {
                 Mod.log.Warn(endMessage);
@@ -305,6 +307,7 @@ namespace Settings_File_Guard
         private static void StopTrackingTimer()
         {
             s_IsTracking = false;
+            SettingsDirectoryTraceWatcher.Disarm();
             Timer timer = s_Timer;
             s_Timer = null;
             timer?.Dispose();
