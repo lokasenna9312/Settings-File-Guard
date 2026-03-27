@@ -29,13 +29,29 @@ namespace Settings_File_Guard
         }
     }
 
-    internal sealed class LocaleEN : IDictionarySource
+    internal sealed class DiagnosticsLocaleSource : IDictionarySource
     {
         private readonly Setting m_Setting;
+        private readonly string m_SettingsTitle;
+        private readonly string m_MainTab;
+        private readonly string m_DiagnosticsGroup;
+        private readonly string m_EnableLabel;
+        private readonly string m_EnableDescription;
 
-        public LocaleEN(Setting setting)
+        public DiagnosticsLocaleSource(
+            Setting setting,
+            string settingsTitle,
+            string mainTab,
+            string diagnosticsGroup,
+            string enableLabel,
+            string enableDescription)
         {
             m_Setting = setting;
+            m_SettingsTitle = settingsTitle;
+            m_MainTab = mainTab;
+            m_DiagnosticsGroup = diagnosticsGroup;
+            m_EnableLabel = enableLabel;
+            m_EnableDescription = enableDescription;
         }
 
         public IEnumerable<KeyValuePair<string, string>> ReadEntries(
@@ -44,39 +60,11 @@ namespace Settings_File_Guard
         {
             return new Dictionary<string, string>
             {
-                { m_Setting.GetSettingsLocaleID(), "Settings File Guard" },
-                { m_Setting.GetOptionTabLocaleID(Setting.kSection), "Main" },
-                { m_Setting.GetOptionGroupLocaleID(Setting.kDiagnosticsGroup), "Diagnostics" },
-                { m_Setting.GetOptionLabelLocaleID(nameof(Setting.EnableDeepDiagnostics)), "Enable deep diagnostics" },
-                { m_Setting.GetOptionDescLocaleID(nameof(Setting.EnableDeepDiagnostics)), "Writes per-session deep diagnostics logs and targeted Settings.coc snapshots for investigation. Leave it disabled unless you are actively troubleshooting shutdown corruption or keybinding loss." },
-            };
-        }
-
-        public void Unload()
-        {
-        }
-    }
-
-    internal sealed class LocaleKO : IDictionarySource
-    {
-        private readonly Setting m_Setting;
-
-        public LocaleKO(Setting setting)
-        {
-            m_Setting = setting;
-        }
-
-        public IEnumerable<KeyValuePair<string, string>> ReadEntries(
-            IList<IDictionaryEntryError> errors,
-            Dictionary<string, int> indexCounts)
-        {
-            return new Dictionary<string, string>
-            {
-                { m_Setting.GetSettingsLocaleID(), "Settings File Guard" },
-                { m_Setting.GetOptionTabLocaleID(Setting.kSection), "메인" },
-                { m_Setting.GetOptionGroupLocaleID(Setting.kDiagnosticsGroup), "진단" },
-                { m_Setting.GetOptionLabelLocaleID(nameof(Setting.EnableDeepDiagnostics)), "Deep diagnostics 사용" },
-                { m_Setting.GetOptionDescLocaleID(nameof(Setting.EnableDeepDiagnostics)), "세션별 deep diagnostics 로그와 Settings.coc 스냅샷을 기록합니다. 종료 손상이나 키바인딩 손실을 조사할 때만 켜 두는 편이 좋습니다." },
+                { m_Setting.GetSettingsLocaleID(), m_SettingsTitle },
+                { m_Setting.GetOptionTabLocaleID(Setting.kSection), m_MainTab },
+                { m_Setting.GetOptionGroupLocaleID(Setting.kDiagnosticsGroup), m_DiagnosticsGroup },
+                { m_Setting.GetOptionLabelLocaleID(nameof(Setting.EnableDeepDiagnostics)), m_EnableLabel },
+                { m_Setting.GetOptionDescLocaleID(nameof(Setting.EnableDeepDiagnostics)), m_EnableDescription },
             };
         }
 
