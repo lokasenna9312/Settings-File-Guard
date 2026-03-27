@@ -12,6 +12,8 @@ namespace Settings_File_Guard
         private const int SnapshotFocusContextBefore = 20;
         private const int SnapshotFocusContextAfter = 120;
         private const int SnapshotFullFileLineThreshold = 240;
+        private const int SnapshotLabelMaxLength = 56;
+        private const int SnapshotSourceNameMaxLength = 28;
 
         private static readonly object s_Gate = new object();
 
@@ -66,8 +68,7 @@ namespace Settings_File_Guard
 
                 Directory.CreateDirectory(s_SnapshotDirectoryPath);
 
-                string snapshotFileName =
-                    $"{DateTime.Now:yyyyMMdd_HHmmssfff}.{SanitizeFileName(label)}.{SanitizeFileName(Path.GetFileName(sourcePath))}.txt";
+                string snapshotFileName = BuildSnapshotFileName(label, sourcePath);
                 string snapshotPath = Path.Combine(s_SnapshotDirectoryPath, snapshotFileName);
 
                 using (StreamWriter writer = new StreamWriter(snapshotPath, append: false, Encoding.UTF8))
@@ -208,7 +209,15 @@ namespace Settings_File_Guard
             return -1;
         }
 
-        private static string SanitizeFileName(string value)
+        private static string BuildSnapshotFileName(string label, string sourcePath)
+        {
+            string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmssfff");
+            string safeLabel = SanitizeFileName(label, SnapshotLabelMaxLength);
+            string safeSource = SanitizeFileName(Path.GetFileName(sourcePath), SnapshotSourceNameMaxLength);
+            return $"{timestamp}.{safeLabel}.{safeSource}.txt";
+        }
+
+        private static string SanitizeFileName(string value, int maxLength)
         {
             if (string.IsNullOrWhiteSpace(value))
             {
@@ -221,7 +230,21 @@ namespace Settings_File_Guard
                 builder.Append(Array.IndexOf(Path.GetInvalidFileNameChars(), character) >= 0 ? '_' : character);
             }
 
-            return builder.ToString();
+            string sanitized = builder.ToString().Trim().TrimEnd('.');
+            if (sanitized.Length == 0)
+            {
+                sanitized = "unnamed";
+            }
+
+            if (sanitized.Length <= maxLength)
+            {
+                return sanitized;
+            }
+
+            int hash = StringComparer.Ordinal.GetHashCode(sanitized);
+            string suffix = $"~{hash & 0x7fffffff:x8}";
+            int prefixLength = Math.Max(8, maxLength - suffix.Length);
+            return sanitized.Substring(0, prefixLength) + suffix;
         }
     }
 }
