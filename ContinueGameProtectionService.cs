@@ -261,10 +261,21 @@ namespace Settings_File_Guard
 
             try
             {
-                return string.Equals(
-                    Path.GetFullPath(path),
-                    GuardPaths.ContinueGameFilePath,
-                    StringComparison.OrdinalIgnoreCase);
+                string normalizedPath = Path.GetFullPath(path);
+                if (string.Equals(normalizedPath, GuardPaths.ContinueGameFilePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                string fileName = Path.GetFileName(normalizedPath);
+                if (string.Equals(fileName, "continue_game.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                return
+                    normalizedPath.EndsWith(Path.DirectorySeparatorChar + "continue_game.json", StringComparison.OrdinalIgnoreCase) ||
+                    normalizedPath.EndsWith(Path.AltDirectorySeparatorChar + "continue_game.json", StringComparison.OrdinalIgnoreCase);
             }
             catch
             {

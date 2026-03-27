@@ -20,6 +20,7 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 - Switched deep diagnostics enablement to read the loaded mod setting during runtime while still honoring the legacy marker file as the initial default for migrated installs.
 - Removed the legacy deep-diagnostics marker-file migration so the setting now uses the options UI only.
 - Kept deep diagnostics opt-in by default so normal releases do not accumulate per-session deep-diagnostics logs and snapshots unless the user explicitly enables them.
+- Broadened `continue_game.json` path matching so shutdown deletion events reach the new continue-target restore path reliably.
 
 ### Verified
 
