@@ -146,8 +146,11 @@ namespace Settings_File_Guard
 
             if (message == null)
             {
+                ContinueGameProtectionService.ObserveSettingsDirectoryEvent(kind, fullPath, oldFullPath);
                 return;
             }
+
+            ContinueGameProtectionService.ObserveSettingsDirectoryEvent(kind, fullPath, oldFullPath);
 
             if (includeTrackingState)
             {

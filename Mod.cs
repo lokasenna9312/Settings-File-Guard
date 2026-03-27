@@ -27,6 +27,7 @@ namespace Settings_File_Guard
             RegisterLocalization();
             m_Setting.RegisterInOptionsUI();
             GuardDiagnostics.Initialize();
+            ContinueGameProtectionService.InitializeSession();
             ShutdownWriteTracker.Initialize();
             log.Info(nameof(OnLoad));
             LogLoadedBuildIdentity();
@@ -55,6 +56,7 @@ namespace Settings_File_Guard
         {
             log.Info(nameof(OnDispose));
             GuardDiagnostics.WriteEvent("LIFECYCLE", "OnDispose start.");
+            ContinueGameProtectionService.CaptureHealthyContinueGame("pre-dispose");
             ShutdownWriteTracker.Arm("OnDispose start");
             GuardDiagnostics.DumpFileSnapshot(
                 "LIFECYCLE",

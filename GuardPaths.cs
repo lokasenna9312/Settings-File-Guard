@@ -40,6 +40,8 @@ namespace Settings_File_Guard
 
         public static string SettingsFilePath => Path.Combine(SettingsDirectoryPath, "Settings.coc");
 
+        public static string ContinueGameFilePath => Path.Combine(SettingsDirectoryPath, "continue_game.json");
+
         public static string LogsDirectoryPath => Path.Combine(SettingsDirectoryPath, "Logs");
 
         private static string ResolveSettingsDirectoryPath()

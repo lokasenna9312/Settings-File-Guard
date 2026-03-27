@@ -1,0 +1,323 @@
+using System;
+using System.IO;
+
+namespace Settings_File_Guard
+{
+    internal static class ContinueGameProtectionService
+    {
+        private const string BackupFileName = "continue_game.json.settings_file_guard.bak";
+        private const long MinimumHealthyFileLengthBytes = 16;
+
+        private static readonly object s_Gate = new object();
+
+        private static bool s_SessionInitialized;
+        private static bool s_DeletedDuringShutdown;
+        private static bool s_LoggedMissingBackupAfterDeletion;
+        private static int s_RestoreAttempts;
+        private static DateTime s_SessionStartedUtc;
+        private static string s_LastHealthyDescription;
+
+        public static void InitializeSession()
+        {
+            lock (s_Gate)
+            {
+                s_SessionInitialized = true;
+                s_SessionStartedUtc = DateTime.UtcNow;
+                s_DeletedDuringShutdown = false;
+                s_LoggedMissingBackupAfterDeletion = false;
+                s_RestoreAttempts = 0;
+                s_LastHealthyDescription = "none";
+                CaptureHealthyContinueGameLocked("startup baseline", logMissing: false);
+            }
+        }
+
+        public static void CaptureHealthyContinueGame(string reason)
+        {
+            lock (s_Gate)
+            {
+                if (!s_SessionInitialized)
+                {
+                    InitializeSession();
+                }
+
+                CaptureHealthyContinueGameLocked(reason, logMissing: true);
+            }
+        }
+
+        public static void ObserveSettingsDirectoryEvent(string kind, string path, string oldPath)
+        {
+            if (!TouchesContinueGame(path) && !TouchesContinueGame(oldPath))
+            {
+                return;
+            }
+
+            lock (s_Gate)
+            {
+                if (!s_SessionInitialized)
+                {
+                    return;
+                }
+
+                bool deletedCurrentPath =
+                    string.Equals(kind, "Deleted", StringComparison.OrdinalIgnoreCase) &&
+                    TouchesContinueGame(path);
+                bool renamedAway =
+                    string.Equals(kind, "Renamed", StringComparison.OrdinalIgnoreCase) &&
+                    TouchesContinueGame(oldPath) &&
+                    !TouchesContinueGame(path);
+
+                if (deletedCurrentPath || renamedAway)
+                {
+                    s_DeletedDuringShutdown = true;
+                    string message =
+                        "[CONTINUE_GAME] Observed continue_game.json disappearing during shutdown tracking. " +
+                        $"kind={kind}, path={path ?? "null"}, oldPath={oldPath ?? "null"}, sessionStartedUtc={s_SessionStartedUtc:O}, " +
+                        $"lastHealthy={s_LastHealthyDescription}, backup={DescribeFileState(BackupFilePath)}";
+                    Mod.log.Warn(message);
+                    GuardDiagnostics.WriteEvent("CONTINUE_GAME", message);
+                    return;
+                }
+
+                if (TouchesContinueGame(path))
+                {
+                    CaptureHealthyContinueGameLocked($"watcher-{kind}", logMissing: false);
+                }
+            }
+        }
+
+        public static void TryRestoreDeletedContinueGame(string reason, bool isTerminalPhase)
+        {
+            lock (s_Gate)
+            {
+                if (!s_SessionInitialized || !s_DeletedDuringShutdown)
+                {
+                    return;
+                }
+
+                ContinueGameFileAnalysis currentAnalysis = AnalyzeContinueGameFile(GuardPaths.ContinueGameFilePath);
+                if (currentAnalysis.LooksHealthy)
+                {
+                    s_DeletedDuringShutdown = false;
+                    s_LoggedMissingBackupAfterDeletion = false;
+
+                    string skipMessage =
+                        "[CONTINUE_GAME] Skipped continue_game.json restore because the file is healthy again. " +
+                        $"reason={reason}, current={currentAnalysis.Describe()}, backup={DescribeFileState(BackupFilePath)}";
+                    Mod.log.Info(skipMessage);
+                    GuardDiagnostics.WriteEvent("CONTINUE_GAME", skipMessage);
+                    return;
+                }
+
+                if (currentAnalysis.Exists)
+                {
+                    return;
+                }
+
+                if (!File.Exists(BackupFilePath))
+                {
+                    if (!s_LoggedMissingBackupAfterDeletion)
+                    {
+                        s_LoggedMissingBackupAfterDeletion = true;
+                        string missingBackupMessage =
+                            "[CONTINUE_GAME] Unable to restore continue_game.json because no healthy backup is available. " +
+                            $"reason={reason}, current={currentAnalysis.Describe()}, lastHealthy={s_LastHealthyDescription}";
+                        Mod.log.Warn(missingBackupMessage);
+                        GuardDiagnostics.WriteEvent("CONTINUE_GAME", missingBackupMessage);
+                    }
+
+                    return;
+                }
+
+                s_RestoreAttempts += 1;
+                try
+                {
+                    Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
+                    File.Copy(BackupFilePath, GuardPaths.ContinueGameFilePath, overwrite: true);
+
+                    ContinueGameFileAnalysis restoredAnalysis = AnalyzeContinueGameFile(GuardPaths.ContinueGameFilePath);
+                    s_DeletedDuringShutdown = false;
+                    s_LoggedMissingBackupAfterDeletion = false;
+                    s_LastHealthyDescription = restoredAnalysis.Describe();
+
+                    string restoredMessage =
+                        "[CONTINUE_GAME] Restored continue_game.json from backup. " +
+                        $"reason={reason}, terminalPhase={isTerminalPhase}, attempt={s_RestoreAttempts}, restored={restoredAnalysis.Describe()}, backup={DescribeFileState(BackupFilePath)}";
+                    Mod.log.Warn(restoredMessage);
+                    GuardDiagnostics.WriteEvent("CONTINUE_GAME", restoredMessage);
+                    GuardDiagnostics.DumpFileSnapshot(
+                        "CONTINUE_GAME",
+                        $"continue-game-restored-{s_RestoreAttempts:00}",
+                        GuardPaths.ContinueGameFilePath,
+                        restoredAnalysis.Describe());
+                }
+                catch (IOException ex) when (SettingsFileProtectionService.IsSharingViolation(ex))
+                {
+                    string deferredMessage =
+                        "[CONTINUE_GAME] Deferred continue_game.json restore because the file is still locked. " +
+                        $"reason={reason}, terminalPhase={isTerminalPhase}, attempt={s_RestoreAttempts}, exception={ex.Message}";
+                    Mod.log.Warn(deferredMessage);
+                    GuardDiagnostics.WriteEvent("CONTINUE_GAME", deferredMessage);
+                }
+                catch (Exception ex)
+                {
+                    string failureMessage =
+                        "[CONTINUE_GAME] Failed to restore continue_game.json from backup. " +
+                        $"reason={reason}, terminalPhase={isTerminalPhase}, attempt={s_RestoreAttempts}, exception={ex}";
+                    Mod.log.Error(ex, failureMessage);
+                    GuardDiagnostics.WriteEvent("CONTINUE_GAME", failureMessage);
+                }
+            }
+        }
+
+        private static void CaptureHealthyContinueGameLocked(string reason, bool logMissing)
+        {
+            ContinueGameFileAnalysis analysis = AnalyzeContinueGameFile(GuardPaths.ContinueGameFilePath);
+            if (!analysis.LooksHealthy)
+            {
+                if (logMissing)
+                {
+                    string skippedMessage =
+                        "[CONTINUE_GAME] Skipped continue_game.json backup because the current file does not look healthy. " +
+                        $"reason={reason}, current={analysis.Describe()}, backup={DescribeFileState(BackupFilePath)}";
+                    Mod.log.Info(skippedMessage);
+                    GuardDiagnostics.WriteEvent("CONTINUE_GAME", skippedMessage);
+                }
+
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
+                File.Copy(GuardPaths.ContinueGameFilePath, BackupFilePath, overwrite: true);
+                s_LastHealthyDescription = analysis.Describe();
+
+                string message =
+                    "[CONTINUE_GAME] Captured healthy continue_game.json backup. " +
+                    $"reason={reason}, current={analysis.Describe()}, backup={DescribeFileState(BackupFilePath)}";
+                Mod.log.Info(message);
+                GuardDiagnostics.WriteEvent("CONTINUE_GAME", message);
+            }
+            catch (IOException ex) when (SettingsFileProtectionService.IsSharingViolation(ex))
+            {
+                string deferredMessage =
+                    "[CONTINUE_GAME] Deferred continue_game.json backup because the file is still locked. " +
+                    $"reason={reason}, current={analysis.Describe()}, exception={ex.Message}";
+                Mod.log.Warn(deferredMessage);
+                GuardDiagnostics.WriteEvent("CONTINUE_GAME", deferredMessage);
+            }
+            catch (Exception ex)
+            {
+                string failureMessage =
+                    "[CONTINUE_GAME] Failed to capture continue_game.json backup. " +
+                    $"reason={reason}, current={analysis.Describe()}, exception={ex}";
+                Mod.log.Error(ex, failureMessage);
+                GuardDiagnostics.WriteEvent("CONTINUE_GAME", failureMessage);
+            }
+        }
+
+        private static ContinueGameFileAnalysis AnalyzeContinueGameFile(string path)
+        {
+            ContinueGameFileAnalysis analysis = new ContinueGameFileAnalysis(path);
+            if (!File.Exists(path))
+            {
+                analysis.Reason = "missing";
+                return analysis;
+            }
+
+            try
+            {
+                FileInfo info = new FileInfo(path);
+                analysis.Exists = true;
+                analysis.Length = info.Length;
+                analysis.LastWriteTimeUtc = info.LastWriteTimeUtc;
+
+                string text = File.ReadAllText(path);
+                string trimmed = text == null ? string.Empty : text.Trim();
+                analysis.StartsWithJsonObject = trimmed.StartsWith("{", StringComparison.Ordinal);
+                analysis.EndsWithJsonObject = trimmed.EndsWith("}", StringComparison.Ordinal);
+                analysis.HasJsonSeparator = trimmed.IndexOf(':') >= 0;
+                analysis.LooksHealthy =
+                    analysis.Length >= MinimumHealthyFileLengthBytes &&
+                    analysis.StartsWithJsonObject &&
+                    analysis.EndsWithJsonObject &&
+                    analysis.HasJsonSeparator;
+                analysis.Reason = analysis.LooksHealthy ? "healthy" : "invalid-json-shape";
+            }
+            catch (Exception ex)
+            {
+                analysis.Reason = $"read-failed:{ex.GetType().Name}:{ex.Message}";
+            }
+
+            return analysis;
+        }
+
+        private static bool TouchesContinueGame(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            try
+            {
+                return string.Equals(
+                    Path.GetFullPath(path),
+                    GuardPaths.ContinueGameFilePath,
+                    StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string DescribeFileState(string path)
+        {
+            return AnalyzeContinueGameFile(path).Describe();
+        }
+
+        private static string BackupFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, BackupFileName);
+
+        private struct ContinueGameFileAnalysis
+        {
+            public ContinueGameFileAnalysis(string filePath)
+            {
+                FilePath = filePath;
+                Exists = false;
+                Length = 0;
+                LastWriteTimeUtc = DateTime.MinValue;
+                StartsWithJsonObject = false;
+                EndsWithJsonObject = false;
+                HasJsonSeparator = false;
+                LooksHealthy = false;
+                Reason = "unknown";
+            }
+
+            public string FilePath { get; }
+
+            public bool Exists { get; set; }
+
+            public long Length { get; set; }
+
+            public DateTime LastWriteTimeUtc { get; set; }
+
+            public bool StartsWithJsonObject { get; set; }
+
+            public bool EndsWithJsonObject { get; set; }
+
+            public bool HasJsonSeparator { get; set; }
+
+            public bool LooksHealthy { get; set; }
+
+            public string Reason { get; set; }
+
+            public string Describe()
+            {
+                return
+                    $"file={FilePath}, exists={Exists}, length={Length}, startsWithObject={StartsWithJsonObject}, " +
+                    $"endsWithObject={EndsWithJsonObject}, hasSeparator={HasJsonSeparator}, healthy={LooksHealthy}, reason={Reason}, lastWriteUtc={LastWriteTimeUtc:O}";
+            }
+        }
+    }
+}

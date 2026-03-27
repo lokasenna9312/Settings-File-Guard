@@ -11,6 +11,7 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 - Added a persisted mod options toggle for deep diagnostics so the feature can be enabled or disabled from the in-game settings UI instead of only through a marker file.
 - Added English and Korean option text for the new deep diagnostics setting.
 - Expanded the deep diagnostics option text to all 12 Cities: Skylines II supported UI locales so the setting no longer falls back to English outside the initial two languages.
+- Added best-effort `continue_game.json` protection that captures a healthy launcher continue-target backup and restores it during shutdown if the file disappears after a valid save.
 
 ### Fixed
 

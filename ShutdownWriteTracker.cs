@@ -135,6 +135,7 @@ namespace Settings_File_Guard
         private static void CaptureTerminalEvent(string phase)
         {
             RunFailSafeRecovery($"terminal-{phase}", ignoreQuietPeriod: true, isTerminalPhase: true);
+            ContinueGameProtectionService.TryRestoreDeletedContinueGame($"terminal-{phase}", isTerminalPhase: true);
 
             lock (s_Gate)
             {
@@ -226,10 +227,12 @@ namespace Settings_File_Guard
             if (shouldAttemptImmediate)
             {
                 RunFailSafeRecovery(immediateTrigger, ignoreQuietPeriod: true, isTerminalPhase: false);
+                ContinueGameProtectionService.TryRestoreDeletedContinueGame(immediateTrigger, isTerminalPhase: false);
                 return;
             }
 
             RunFailSafeRecovery("poll", ignoreQuietPeriod: false, isTerminalPhase: false);
+            ContinueGameProtectionService.TryRestoreDeletedContinueGame("poll", isTerminalPhase: false);
         }
 
         private static void UpdateTrackingReason(string reason, string source)

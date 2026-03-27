@@ -10,6 +10,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 - Seeds and updates a healthy primary `Settings.coc` backup plus rotating healthy snapshots when the current file looks valid.
 - Restores the strongest healthy backup candidate on startup only when the current `Settings.coc` hits a hard corruption threshold.
 - Preserves the broken file as a timestamped corrupt snapshot before restore.
+- Captures a best-effort backup of `continue_game.json` and restores it during shutdown if the launcher continue target disappears after being valid earlier in the session.
 - Emits detailed file-health diagnostics to `Settings_File_Guard.Mod.log` so backup and restore decisions are explainable after the fact.
 - Supports optional deep diagnostics via the mod options UI for session logs and `Settings.coc` snapshots around restore and fallback events.
 - Uses conservative recovery by default: weaker-but-still-parseable files are preserved for diagnosis instead of being aggressively replaced.
@@ -20,6 +21,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 - 현재 파일이 정상으로 보일 때 건강한 `Settings.coc` 주 백업과 회전 스냅샷을 생성하고 갱신합니다.
 - 시작 시 현재 `Settings.coc`가 하드 손상 기준에 걸릴 때만 가장 강한 건강 백업 후보로 복원합니다.
 - 복원 전에 손상된 파일을 타임스탬프가 붙은 스냅샷으로 남깁니다.
+- 세션 중 정상으로 보였던 `continue_game.json`을 best-effort로 백업해 두고, 종료 중 런처 이어하기 대상이 사라지면 복원합니다.
 - 백업/복원 판단 근거가 보이도록 상세 진단 로그를 남깁니다.
 - 모드 옵션에서 deep diagnostics를 켜면 복구/우회 시점의 세션 로그와 `Settings.coc` 스냅샷을 남길 수 있습니다.
 - 기본 복구 정책은 보수적이며, 약하지만 아직 읽을 수 있는 파일은 자동 교체보다 진단을 우선합니다.
@@ -27,7 +29,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 ## Limitations
 
 - It cannot protect sessions where **all code mods are disabled**, because this utility itself is a code mod.
-- It only protects the global `Settings.coc` file and does not touch savegame data.
+- It protects `Settings.coc` plus the launcher continue-target metadata file `continue_game.json`, but it does not modify actual `.cok` savegame contents.
 - It cannot restore anything until a healthy backup has been created at least once.
 - The diagnostic log helps explain failures, but it is not itself a restorable source of keybindings. Actual recovery still depends on healthy backups or snapshots.
 - Conservative recovery may intentionally leave a suspicious but still parseable `Settings.coc` in place so that evidence is preserved for diagnosis.
@@ -36,7 +38,9 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 ## Files and Paths
 
 - Settings file: `Settings.coc` in the game's user data directory.
+- Launcher continue target file: `continue_game.json` in the same directory.
 - Primary backup file: `Settings.coc.settings_file_guard.bak` in the same directory.
+- Continue target backup file: `continue_game.json.settings_file_guard.bak` in the same directory.
 - Healthy snapshot: `Settings.coc.settings_file_guard.healthy.YYYYMMDD_HHMMSSfff.bak` in the same directory.
 - Corrupt snapshot: `Settings.coc.settings_guard.corrupt.YYYYMMDD_HHMMSSfff.bak` in the same directory.
 - Log file: `Settings_File_Guard.Mod.log` under the game's user data `Logs` directory.
