@@ -219,9 +219,16 @@ namespace Settings_File_Guard
 
         internal static bool CurrentSettingsFileHasHardRestoreFailure()
         {
+            return CurrentSettingsFileHasHardRestoreFailure(out _);
+        }
+
+        internal static bool CurrentSettingsFileHasHardRestoreFailure(out string analysisDescription)
+        {
             lock (s_FileGate)
             {
-                return AnalyzeSettingsFile(GuardPaths.SettingsFilePath).HasHardRestoreFailure;
+                SettingsFileAnalysis analysis = AnalyzeSettingsFile(GuardPaths.SettingsFilePath);
+                analysisDescription = analysis.Describe();
+                return analysis.HasHardRestoreFailure;
             }
         }
 
