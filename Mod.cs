@@ -14,6 +14,7 @@ namespace Settings_File_Guard
 
         public void OnLoad(UpdateSystem updateSystem)
         {
+            GuardPaths.Initialize();
             GuardDiagnostics.Initialize();
             ShutdownWriteTracker.Initialize();
             log.Info(nameof(OnLoad));
