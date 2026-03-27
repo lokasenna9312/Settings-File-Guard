@@ -25,7 +25,7 @@ namespace Settings_File_Guard
 
         public override void SetDefaults()
         {
-            EnableDeepDiagnostics = GuardDiagnostics.GetDefaultDeepDiagnosticsEnabled();
+            EnableDeepDiagnostics = false;
         }
     }
 

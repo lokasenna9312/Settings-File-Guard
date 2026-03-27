@@ -6,7 +6,6 @@ namespace Settings_File_Guard
 {
     internal static class GuardDiagnostics
     {
-        private const string LegacyToggleFileName = "Settings_File_Guard.DeepDiagnostics.enabled";
         private const int SnapshotHeadLineCount = 80;
         private const int SnapshotTailLineCount = 40;
         private const int SnapshotFocusContextBefore = 20;
@@ -18,8 +17,6 @@ namespace Settings_File_Guard
         private static readonly object s_Gate = new object();
 
         private static bool s_Initialized;
-        private static bool s_HasLastKnownEnabledState;
-        private static bool s_LastKnownEnabledState;
         private static string s_SessionId;
         private static string s_LogFilePath;
         private static string s_SnapshotDirectoryPath;
@@ -33,20 +30,6 @@ namespace Settings_File_Guard
                 {
                     return GetCurrentEnabledStateCore();
                 }
-            }
-        }
-
-        public static string LegacyToggleFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, LegacyToggleFileName);
-
-        public static bool GetDefaultDeepDiagnosticsEnabled()
-        {
-            try
-            {
-                return File.Exists(LegacyToggleFilePath);
-            }
-            catch
-            {
-                return false;
             }
         }
 
@@ -141,7 +124,7 @@ namespace Settings_File_Guard
 
                 s_Initialized = true;
                 Mod.log.Info(
-                    $"[KEYBIND_DIAGNOSTICS] Deep diagnostics {(isEnabled ? "enabled" : "disabled")}. session={s_SessionId}, legacyToggleFile={LegacyToggleFilePath}, logPath={s_LogFilePath ?? "none"}");
+                    $"[KEYBIND_DIAGNOSTICS] Deep diagnostics {(isEnabled ? "enabled" : "disabled")}. session={s_SessionId}, logPath={s_LogFilePath ?? "none"}");
             }
         }
 
@@ -156,20 +139,7 @@ namespace Settings_File_Guard
 
         private static bool GetCurrentEnabledStateCore()
         {
-            if (Mod.Settings != null)
-            {
-                s_LastKnownEnabledState = Mod.Settings.EnableDeepDiagnostics;
-                s_HasLastKnownEnabledState = true;
-                return s_LastKnownEnabledState;
-            }
-
-            if (!s_HasLastKnownEnabledState)
-            {
-                s_LastKnownEnabledState = GetDefaultDeepDiagnosticsEnabled();
-                s_HasLastKnownEnabledState = true;
-            }
-
-            return s_LastKnownEnabledState;
+            return Mod.Settings != null && Mod.Settings.EnableDeepDiagnostics;
         }
 
         private static void EnsureArtifactsInitialized()
@@ -197,7 +167,7 @@ namespace Settings_File_Guard
             Directory.CreateDirectory(s_SnapshotDirectoryPath);
             AppendLogLineCore(
                 "SYSTEM",
-                $"Deep diagnostics enabled. session={s_SessionId}, legacyToggleFile={LegacyToggleFilePath}, snapshotDirectory={s_SnapshotDirectoryPath}");
+                $"Deep diagnostics enabled. session={s_SessionId}, snapshotDirectory={s_SnapshotDirectoryPath}");
         }
 
         private static void AppendLogLineCore(string category, string message)

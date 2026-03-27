@@ -17,6 +17,8 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 - Cached the Cities: Skylines II settings directory during startup so shutdown recovery no longer calls `Application.persistentDataPath` during `ProcessExit`.
 - Initialized `GuardPaths` in `OnLoad` before diagnostics and shutdown recovery begin.
 - Switched deep diagnostics enablement to read the loaded mod setting during runtime while still honoring the legacy marker file as the initial default for migrated installs.
+- Removed the legacy deep-diagnostics marker-file migration so the setting now uses the options UI only.
+- Kept deep diagnostics opt-in by default so normal releases do not accumulate per-session deep-diagnostics logs and snapshots unless the user explicitly enables them.
 
 ### Verified
 
