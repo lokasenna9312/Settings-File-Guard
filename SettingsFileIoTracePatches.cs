@@ -169,7 +169,8 @@ namespace Settings_File_Guard
                 __state.ShareDescription,
                 __state.OpenedUtc,
                 __state.OpenThreadId,
-                __state.OpenStackTrace);
+                __state.OpenStackTrace,
+                __state.OpenedWhileTracking);
 
             lock (s_Gate)
             {
@@ -180,10 +181,13 @@ namespace Settings_File_Guard
                 s_TrackedStreams[stream] = state;
             }
 
-            LogTrackedEvent(
-                "Opened tracked FileStream for Settings.coc.",
-                state,
-                $"tracking={ShutdownWriteTracker.DescribeTrackingState()}, currentLength={TryGetStreamLength(stream)}, currentPosition={TryGetStreamPosition(stream)}, stack={state.OpenStackTrace}");
+            if (ShouldLogStreamEvent(state))
+            {
+                LogTrackedEvent(
+                    "Opened tracked FileStream for Settings.coc.",
+                    state,
+                    $"tracking={ShutdownWriteTracker.DescribeTrackingState()}, currentLength={TryGetStreamLength(stream)}, currentPosition={TryGetStreamPosition(stream)}, stack={state.OpenStackTrace}");
+            }
         }
 
         private static void FileStreamWritePrefix(object __instance, byte[] array, int offset, int count)
@@ -220,14 +224,14 @@ namespace Settings_File_Guard
                 }
             }
 
-            if (shouldLog)
+            if (shouldLog && ShouldLogStreamEvent(state))
             {
                 LogTrackedEvent(
                     "Tracked FileStream.Write on Settings.coc.",
                     state,
                     $"tracking={ShutdownWriteTracker.DescribeTrackingState()}, writeIndex={writeIndex}, count={count}, offset={offset}, totalBytesWritten={totalBytesWritten}, currentLength={TryGetStreamLength(__instance as FileStream)}, currentPosition={TryGetStreamPosition(__instance as FileStream)}");
             }
-            else if (shouldLogSuppression)
+            else if (shouldLogSuppression && ShouldLogStreamEvent(state))
             {
                 LogTrackedEvent(
                     "Further FileStream.Write logs for this tracked Settings.coc stream will be suppressed.",
@@ -251,10 +255,13 @@ namespace Settings_File_Guard
                 state.LastOperationStackTrace = CaptureCompactStackTrace();
             }
 
-            LogTrackedEvent(
-                "Tracked FileStream.SetLength on Settings.coc.",
-                state,
-                $"tracking={ShutdownWriteTracker.DescribeTrackingState()}, requestedLength={value}, currentLength={TryGetStreamLength(__instance as FileStream)}, currentPosition={TryGetStreamPosition(__instance as FileStream)}");
+            if (ShouldLogStreamEvent(state))
+            {
+                LogTrackedEvent(
+                    "Tracked FileStream.SetLength on Settings.coc.",
+                    state,
+                    $"tracking={ShutdownWriteTracker.DescribeTrackingState()}, requestedLength={value}, currentLength={TryGetStreamLength(__instance as FileStream)}, currentPosition={TryGetStreamPosition(__instance as FileStream)}");
+            }
         }
 
         private static void FileStreamDisposePrefix(object __instance, bool disposing)
@@ -275,10 +282,13 @@ namespace Settings_File_Guard
                 PruneDisposedStreamsLocked(state.DisposedUtc);
             }
 
-            LogTrackedEvent(
-                "Tracked FileStream.Dispose on Settings.coc.",
-                state,
-                $"disposing={disposing}, tracking={ShutdownWriteTracker.DescribeTrackingState()}, writesObserved={state.WriteCount}, totalBytesWritten={state.TotalBytesWritten}, finalLength={TryGetStreamLength(__instance as FileStream)}, finalPosition={TryGetStreamPosition(__instance as FileStream)}");
+            if (ShouldLogStreamEvent(state))
+            {
+                LogTrackedEvent(
+                    "Tracked FileStream.Dispose on Settings.coc.",
+                    state,
+                    $"disposing={disposing}, tracking={ShutdownWriteTracker.DescribeTrackingState()}, writesObserved={state.WriteCount}, totalBytesWritten={state.TotalBytesWritten}, finalLength={TryGetStreamLength(__instance as FileStream)}, finalPosition={TryGetStreamPosition(__instance as FileStream)}");
+            }
         }
 
         private static void FileOperationPrefix(MethodBase __originalMethod, object[] __args)
@@ -302,8 +312,7 @@ namespace Settings_File_Guard
 
         private static PendingStreamTrace CreatePendingStreamTrace(MethodBase originalMethod, object[] args)
         {
-            if (!ShutdownWriteTracker.IsTracking ||
-                args == null ||
+            if (args == null ||
                 args.Length == 0 ||
                 !(args[0] is string path) ||
                 !IsSettingsFilePath(path))
@@ -327,7 +336,18 @@ namespace Settings_File_Guard
                 OpenedUtc = DateTime.UtcNow,
                 OpenThreadId = Thread.CurrentThread.ManagedThreadId,
                 OpenStackTrace = CaptureCompactStackTrace(),
+                OpenedWhileTracking = ShutdownWriteTracker.IsTracking,
             };
+        }
+
+        private static bool ShouldLogStreamEvent(TrackedStreamState state)
+        {
+            if (state == null)
+            {
+                return false;
+            }
+
+            return ShutdownWriteTracker.IsTracking || state.OpenedWhileTracking;
         }
 
         private static string DescribeConstructorArguments(
@@ -532,7 +552,7 @@ namespace Settings_File_Guard
                 : string.Empty;
             return
                 $"stream#{state.StreamId}(ageMs={AgeMilliseconds(nowUtc, state.OpenedUtc)}, lastActivityMsAgo={AgeMilliseconds(nowUtc, state.LastActivityUtc)}, " +
-                $"lastOp={state.LastOperation ?? "none"}, lastThread={state.LastOperationThreadId}, writes={state.WriteCount}, bytes={state.TotalBytesWritten}{disposeText})";
+                $"openedWhileTracking={state.OpenedWhileTracking}, lastOp={state.LastOperation ?? "none"}, lastThread={state.LastOperationThreadId}, writes={state.WriteCount}, bytes={state.TotalBytesWritten}{disposeText})";
         }
 
         private static long AgeMilliseconds(DateTime endUtc, DateTime startUtc)
@@ -659,6 +679,8 @@ namespace Settings_File_Guard
             public int OpenThreadId { get; set; }
 
             public string OpenStackTrace { get; set; }
+
+            public bool OpenedWhileTracking { get; set; }
         }
 
         private sealed class TrackedStreamState
@@ -671,7 +693,8 @@ namespace Settings_File_Guard
                 string shareDescription,
                 DateTime openedUtc,
                 int openThreadId,
-                string openStackTrace)
+                string openStackTrace,
+                bool openedWhileTracking)
             {
                 StreamId = streamId;
                 Path = path;
@@ -681,6 +704,7 @@ namespace Settings_File_Guard
                 OpenedUtc = openedUtc;
                 OpenThreadId = openThreadId;
                 OpenStackTrace = openStackTrace;
+                OpenedWhileTracking = openedWhileTracking;
             }
 
             public int StreamId { get; }
@@ -698,6 +722,8 @@ namespace Settings_File_Guard
             public int OpenThreadId { get; }
 
             public string OpenStackTrace { get; }
+
+            public bool OpenedWhileTracking { get; }
 
             public int WriteCount { get; set; }
 
