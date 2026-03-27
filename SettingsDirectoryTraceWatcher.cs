@@ -106,6 +106,9 @@ namespace Settings_File_Guard
 
         private static void RecordEvent(string kind, string fullPath, string oldFullPath)
         {
+            string message = null;
+            bool includeTrackingState = false;
+
             lock (s_Gate)
             {
                 if (!s_IsArmed)
@@ -127,22 +130,32 @@ namespace Settings_File_Guard
                 if (s_LoggedEventCount < MaxLoggedEventsPerSession)
                 {
                     s_LoggedEventCount += 1;
-                    string message =
+                    message =
                         "[KEYBIND_TRACE] Settings-directory watcher observed an event. " +
-                        $"event={traceEvent}, tracking={ShutdownWriteTracker.DescribeTrackingState()}, window={DescribeRecentActivityLocked(nowUtc)}";
-                    Mod.log.Info(message);
-                    GuardDiagnostics.WriteEvent("DIR_TRACE", message);
+                        $"event={traceEvent}, tracking={{trackingState}}, window={DescribeRecentActivityLocked(nowUtc)}";
+                    includeTrackingState = true;
                 }
                 else if (!s_SuppressedMessageLogged)
                 {
                     s_SuppressedMessageLogged = true;
-                    string message =
+                    message =
                         "[KEYBIND_TRACE] Settings-directory watcher reached the per-session event log limit. " +
                         $"window={DescribeRecentActivityLocked(nowUtc)}";
-                    Mod.log.Info(message);
-                    GuardDiagnostics.WriteEvent("DIR_TRACE", message);
                 }
             }
+
+            if (message == null)
+            {
+                return;
+            }
+
+            if (includeTrackingState)
+            {
+                message = message.Replace("{trackingState}", ShutdownWriteTracker.DescribeTrackingState());
+            }
+
+            Mod.log.Info(message);
+            GuardDiagnostics.WriteEvent("DIR_TRACE", message);
         }
 
         private static string DescribeRecentActivityLocked(DateTime nowUtc)
