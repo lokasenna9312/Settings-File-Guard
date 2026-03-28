@@ -63,5 +63,9 @@ Files created by this mod:
 - Preserves continue_game.json metadata during shutdown when possible.
 - Optional deep diagnostics can be enabled from the in-game mod options UI.
 	</ChangeLog>
+	<ExternalLink Type="github" Url="https://github.com/lokasenna9312/Settings-File-Guard/" />
+	<ExternalLink Type="kofi" Url="https://ko-fi.com/pecuts_solentis" />
+	<ExternalLink Type="patreon" Url="https://www.patreon.com/c/PectusSolentis" />
+	<ExternalLink Type="paypal" Url="https://www.paypal.com/donate?hosted_button_id=XXXXXXXXXXXX" />
 	<AccessLevel Value="Public" />
 </Publish>
