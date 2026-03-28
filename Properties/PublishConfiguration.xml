@@ -67,6 +67,7 @@ Files created by this mod:
 - 손상 스냅샷: Settings.coc.settings_guard.corrupt.*.bak
 - 이어하기 메타 백업: continue_game.json.settings_file_guard.bak
 	</LongDescription>
+	<Thumbnail Value="Properties/Thumbnail.png" />
 	<ModVersion Value="1.0.0" />
 	<GameVersion Value="1.5.6f1" />
 	<ChangeLog>

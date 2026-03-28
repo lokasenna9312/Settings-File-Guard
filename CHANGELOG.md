@@ -37,6 +37,7 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 
 ### Fixed
 
+- Added a dedicated Paradox Mods thumbnail asset and wired it into `PublishConfiguration.xml` so first-time publish validation no longer fails on a missing thumbnail.
 - Disabled the experimental pre-main-menu launcher-continue retry path after it proved ineffective in this environment and started provoking `MenuUISystem.ExitToMainMenu()` null-reference failures during launcher startup.
 - Refreshed the PDX publish metadata so the public-facing description now matches the current feature set, including `continue_game.json` protection, the in-game deep-diagnostics toggle, and the explicit launcher-continue limitation.
 - Added Visual Studio PDX publish profiles for first publish, new-version publish, and metadata-only update, and overrode `RunModPostProcessor` so standard Visual Studio build/publish no longer trips the CSII post-processor unless explicitly enabled.
