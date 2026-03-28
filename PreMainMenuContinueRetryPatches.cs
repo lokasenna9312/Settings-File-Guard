@@ -23,6 +23,8 @@ namespace Settings_File_Guard
             AccessTools.Method(typeof(GameManager), "Load", new[] { typeof(GameMode), typeof(Purpose), typeof(IAssetData) });
         private static readonly MethodInfo s_MainMenuMethod =
             AccessTools.Method(typeof(GameManager), "MainMenu", System.Type.EmptyTypes);
+        private static readonly MethodInfo s_OnMainMenuReachedMethod =
+            AccessTools.Method(typeof(GameManager), "OnMainMenuReached");
 
         private static Harmony s_Harmony;
 
@@ -39,6 +41,7 @@ namespace Settings_File_Guard
             PatchIfPresent(s_LoadGuidMethod, nameof(LoadGuidPrefix), nameof(LoadTaskPostfix));
             PatchIfPresent(s_LoadAssetMethod, nameof(LoadAssetPrefix), nameof(LoadTaskPostfix));
             PatchIfPresent(s_MainMenuMethod, nameof(MainMenuPrefix), null);
+            PatchIfPresent(s_OnMainMenuReachedMethod, null, nameof(OnMainMenuReachedPostfix));
         }
 
         private static void PatchIfPresent(MethodInfo method, string prefixName, string postfixName)
@@ -108,8 +111,12 @@ namespace Settings_File_Guard
                 return false;
             }
 
-            PreMainMenuContinueRetryService.MarkMainMenuSeen("GameManager.MainMenu");
             return true;
+        }
+
+        private static void OnMainMenuReachedPostfix(Purpose purpose, GameMode mode)
+        {
+            PreMainMenuContinueRetryService.MarkMainMenuReached("GameManager.OnMainMenuReached", purpose, mode);
         }
     }
 }

@@ -16,7 +16,7 @@ namespace Settings_File_Guard
         private static readonly TimeSpan PreMainMenuRetryBackoff = TimeSpan.FromMilliseconds(250);
 
         private static bool s_SessionInitialized;
-        private static bool s_MainMenuSeen;
+        private static bool s_MainMenuReached;
         private static bool s_StartupLoadObserved;
         private static bool s_StartupLoadFailed;
         private static bool s_LoadCompletedSuccessfully;
@@ -35,7 +35,7 @@ namespace Settings_File_Guard
             lock (s_Gate)
             {
                 s_SessionInitialized = true;
-                s_MainMenuSeen = false;
+                s_MainMenuReached = false;
                 s_StartupLoadObserved = false;
                 s_StartupLoadFailed = false;
                 s_LoadCompletedSuccessfully = false;
@@ -119,6 +119,17 @@ namespace Settings_File_Guard
             }
         }
 
+        public static void AttachCallbacks(GameManager manager)
+        {
+            if (manager == null)
+            {
+                return;
+            }
+
+            manager.onWorldReady -= OnWorldReady;
+            manager.onWorldReady += OnWorldReady;
+        }
+
         public static bool TryInterceptMainMenu(GameManager manager)
         {
             if (manager == null)
@@ -149,7 +160,6 @@ namespace Settings_File_Guard
                         GuardDiagnostics.WriteEvent("CONTINUE_RETRY", exhaustedMessage);
                     }
 
-                    s_MainMenuSeen = true;
                     return false;
                 }
 
@@ -181,7 +191,6 @@ namespace Settings_File_Guard
                 {
                     s_RetryInProgress = false;
                     s_IssuingRetryLoad = false;
-                    s_MainMenuSeen = true;
                 }
 
                 string failureMessage =
@@ -200,14 +209,15 @@ namespace Settings_File_Guard
             }
         }
 
-        public static void MarkMainMenuSeen(string source)
+        public static void MarkMainMenuReached(string source, Purpose purpose, GameMode mode)
         {
             lock (s_Gate)
             {
-                s_MainMenuSeen = true;
+                s_MainMenuReached = true;
                 string message =
-                    "[CONTINUE_RETRY] Main menu transition was allowed to proceed. " +
-                    $"source={source}, state={DescribeStateLocked()}";
+                    "[CONTINUE_RETRY] Main menu was reached. " +
+                    $"source={source}, purpose={purpose}, mode={mode}, state={DescribeStateLocked()}";
+                Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("CONTINUE_RETRY", message);
             }
         }
@@ -225,12 +235,10 @@ namespace Settings_File_Guard
 
                 if (success)
                 {
-                    s_LoadCompletedSuccessfully = true;
-                    s_StartupLoadFailed = false;
                     s_RetryInProgress = false;
 
                     string successMessage =
-                        "[CONTINUE_RETRY] Save-load completed successfully. " +
+                        "[CONTINUE_RETRY] Save-load task completed successfully; waiting for world readiness confirmation. " +
                         $"source={source}, retry={isRetry}, state={DescribeStateLocked()}";
                     Mod.log.Info(successMessage);
                     GuardDiagnostics.WriteEvent("CONTINUE_RETRY", successMessage);
@@ -246,9 +254,9 @@ namespace Settings_File_Guard
                         s_FirstFailureUtc = DateTime.UtcNow;
                     }
 
-                    requestMainMenuFallback = !s_MainMenuSeen;
+                    requestMainMenuFallback = !s_MainMenuReached;
                 }
-                else if (s_StartupLoadObserved && !s_LoadCompletedSuccessfully && !s_MainMenuSeen)
+                else if (s_StartupLoadObserved && !s_LoadCompletedSuccessfully && !s_MainMenuReached)
                 {
                     s_StartupLoadFailed = true;
                     if (s_FirstFailureUtc == DateTime.MinValue)
@@ -293,7 +301,7 @@ namespace Settings_File_Guard
         {
             return
                 s_SessionInitialized &&
-                !s_MainMenuSeen &&
+                !s_MainMenuReached &&
                 !s_LoadCompletedSuccessfully &&
                 !s_IssuingRetryLoad &&
                 DateTime.UtcNow - s_SessionStartedUtc <= StartupTrackingWindow;
@@ -304,7 +312,7 @@ namespace Settings_File_Guard
             if (!s_StartupLoadObserved ||
                 !s_StartupLoadFailed ||
                 s_LoadCompletedSuccessfully ||
-                s_MainMenuSeen ||
+                s_MainMenuReached ||
                 s_RetryInProgress ||
                 IsDefaultGuid(s_TargetGuid))
             {
@@ -335,7 +343,7 @@ namespace Settings_File_Guard
                 s_StartupLoadObserved &&
                 s_StartupLoadFailed &&
                 !s_LoadCompletedSuccessfully &&
-                !s_MainMenuSeen &&
+                !s_MainMenuReached &&
                 !s_RetryInProgress;
         }
 
@@ -363,10 +371,31 @@ namespace Settings_File_Guard
         private static string DescribeStateLocked()
         {
             return
-                $"mainMenuSeen={s_MainMenuSeen}, startupLoadObserved={s_StartupLoadObserved}, startupLoadFailed={s_StartupLoadFailed}, " +
+                $"mainMenuReached={s_MainMenuReached}, startupLoadObserved={s_StartupLoadObserved}, startupLoadFailed={s_StartupLoadFailed}, " +
                 $"loadCompletedSuccessfully={s_LoadCompletedSuccessfully}, retryAttemptCount={s_RetryAttemptCount}, retryInProgress={s_RetryInProgress}, " +
                 $"firstFailureUtc={(s_FirstFailureUtc == DateTime.MinValue ? "none" : s_FirstFailureUtc.ToString("O"))}, " +
                 $"target={s_TargetSummary}, targetSource={s_TargetSource}";
+        }
+
+        private static void OnWorldReady()
+        {
+            lock (s_Gate)
+            {
+                if (!s_SessionInitialized)
+                {
+                    return;
+                }
+
+                s_LoadCompletedSuccessfully = true;
+                s_StartupLoadFailed = false;
+                s_RetryInProgress = false;
+
+                string successMessage =
+                    "[CONTINUE_RETRY] World became ready after a save-load attempt. " +
+                    $"state={DescribeStateLocked()}";
+                Mod.log.Info(successMessage);
+                GuardDiagnostics.WriteEvent("CONTINUE_RETRY", successMessage);
+            }
         }
     }
 }
