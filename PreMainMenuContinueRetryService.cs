@@ -241,6 +241,93 @@ namespace Settings_File_Guard
             }
         }
 
+        public static bool TryInterceptMainMenuReached(GameManager manager, Purpose purpose, GameMode mode)
+        {
+            if (manager == null || !IsTrackedLoad(mode, purpose))
+            {
+                return false;
+            }
+
+            Hash128 retryGuid;
+            string retrySummary;
+            int retryAttempt;
+            TimeSpan remainingWindow;
+
+            lock (s_Gate)
+            {
+                if (!s_SessionInitialized || !s_StartupLoadObserved || s_LoadCompletedSuccessfully)
+                {
+                    return false;
+                }
+
+                if (s_FirstFailureUtc == DateTime.MinValue)
+                {
+                    s_FirstFailureUtc = DateTime.UtcNow;
+                }
+
+                s_StartupLoadFailed = true;
+
+                if (!CanRetryBeforeMainMenuLocked(DateTime.UtcNow))
+                {
+                    if (ShouldLogRetryExhaustedLocked())
+                    {
+                        string exhaustedMessage =
+                            "[CONTINUE_RETRY] Startup continue retry window ended at OnMainMenuReached. " +
+                            $"Allowing the normal main menu flow. purpose={purpose}, mode={mode}, state={DescribeStateLocked()}";
+                        Mod.log.Warn(exhaustedMessage);
+                        GuardDiagnostics.WriteEvent("CONTINUE_RETRY", exhaustedMessage);
+                    }
+
+                    return false;
+                }
+
+                s_RetryInProgress = true;
+                s_IssuingRetryLoad = true;
+                s_RetryAttemptCount += 1;
+                s_LastRetryAttemptUtc = DateTime.UtcNow;
+                retryGuid = s_TargetGuid;
+                retrySummary = s_TargetSummary;
+                retryAttempt = s_RetryAttemptCount;
+                remainingWindow = RemainingRetryWindowLocked(s_LastRetryAttemptUtc);
+            }
+
+            try
+            {
+                string message =
+                    "[CONTINUE_RETRY] Intercepted GameManager.OnMainMenuReached before the menu flow completed. " +
+                    $"Re-trying the startup continue target. purpose={purpose}, mode={mode}, attempt={retryAttempt}, " +
+                    $"remainingWindowMs={Math.Max(0, (int)remainingWindow.TotalMilliseconds)}, guid={retrySummary}";
+                Mod.log.Warn(message);
+                GuardDiagnostics.WriteEvent("CONTINUE_RETRY", message);
+
+                Task<bool> retryTask = manager.Load(GameMode.Game, Purpose.LoadGame, retryGuid);
+                ObserveLoadTask(retryTask, "GameManager.OnMainMenuReached-preemptive-retry", isRetry: true);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                lock (s_Gate)
+                {
+                    s_RetryInProgress = false;
+                    s_IssuingRetryLoad = false;
+                }
+
+                string failureMessage =
+                    "[CONTINUE_RETRY] Failed to start the OnMainMenuReached continue retry. " +
+                    $"guid={retrySummary}, exception={ex}";
+                Mod.log.Error(ex, failureMessage);
+                GuardDiagnostics.WriteEvent("CONTINUE_RETRY", failureMessage);
+                return false;
+            }
+            finally
+            {
+                lock (s_Gate)
+                {
+                    s_IssuingRetryLoad = false;
+                }
+            }
+        }
+
         public static void MarkMainMenuReached(string source, Purpose purpose, GameMode mode)
         {
             lock (s_Gate)

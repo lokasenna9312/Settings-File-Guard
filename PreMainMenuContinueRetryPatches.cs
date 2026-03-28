@@ -44,7 +44,7 @@ namespace Settings_File_Guard
             PatchIfPresent(s_LoadAssetMethod, nameof(LoadAssetPrefix), nameof(LoadAssetPostfix));
             PatchIfPresent(s_LoadDescriptorMethod, nameof(LoadDescriptorPrefix), nameof(LoadDescriptorPostfix));
             PatchIfPresent(s_MainMenuMethod, nameof(MainMenuPrefix), null);
-            PatchIfPresent(s_OnMainMenuReachedMethod, null, nameof(OnMainMenuReachedPostfix));
+            PatchIfPresent(s_OnMainMenuReachedMethod, nameof(OnMainMenuReachedPrefix), nameof(OnMainMenuReachedPostfix));
         }
 
         private static void PatchIfPresent(MethodInfo method, string prefixName, string postfixName)
@@ -149,6 +149,16 @@ namespace Settings_File_Guard
         private static bool MainMenuPrefix(GameManager __instance)
         {
             if (PreMainMenuContinueRetryService.TryInterceptMainMenu(__instance))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool OnMainMenuReachedPrefix(GameManager __instance, Purpose purpose, GameMode mode)
+        {
+            if (PreMainMenuContinueRetryService.TryInterceptMainMenuReached(__instance, purpose, mode))
             {
                 return false;
             }

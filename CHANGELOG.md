@@ -42,3 +42,4 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 - Changed the startup continue retry success criterion to `onWorldReady` instead of trusting `Load()` task completion alone, so menu fallbacks after a superficially successful load can still stay inside the pre-main-menu retry gate.
 - Stopped treating the initial main-menu startup lifecycle as a successful launcher continue load, so pre-main-menu retries now stay armed until an actual `LoadGame` path reports world readiness.
 - Added tracking for `GameManager.Load(..., AsyncReadDescriptor, Hash128, Guid)` so launcher continue attempts that bypass the simpler `Load(Hash128)` hooks can still be identified and retried before the menu fully takes over.
+- Extended the retry gate to `GameManager.OnMainMenuReached(Purpose.LoadGame, GameMode.Game)` so failed launcher continue loads that bypass `MainMenu()` interception can still be retried before the menu flow settles.
