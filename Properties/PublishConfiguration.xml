@@ -1,5 +1,5 @@
 <Publish>
-	<ModId Value="" />
+	<ModId Value="139219" />
 	<DisplayName Value="Settings File Guard" />
 	<ShortDescription Value="Protects Settings.coc against known keybinding-save corruption and preserves launcher continue metadata during shutdown." />
 	<LongDescription>
