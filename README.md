@@ -81,3 +81,12 @@ dotnet build "Settings File Guard.csproj"
 - Leave `Properties/PublishConfiguration.xml` `ModId` empty for the first PDX upload.
 - After the first upload assigns a `ModId`, write that value back into `PublishConfiguration.xml` and publish updates from then on.
 - Public v1 is a background protection mod with an optional deep diagnostics toggle in the mod options UI.
+
+## Visual Studio Publish
+
+- Visual Studio publish profiles are included under `Properties/PublishProfiles`.
+- `PublishNewMod`: first public upload when `ModId` is still empty.
+- `PublishNewVersion`: publish a new version after `ModId` has been assigned.
+- `UpdatePublishedConfiguration`: update already-published metadata/configuration without rebuilding the mod payload.
+- The project expects your Paradox account data at `.local\pdx_account.txt` through `PDXAccountDataPath`.
+- This project overrides `RunModPostProcessor` so normal Visual Studio build/publish no longer forces the CSII post-processor unless `EnableCsiiPostProcessor` is explicitly turned on.

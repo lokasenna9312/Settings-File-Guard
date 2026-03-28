@@ -5,3 +5,4 @@ Library/
 .local/
 .codex_verify/
 *.log
+*.pubxml.user

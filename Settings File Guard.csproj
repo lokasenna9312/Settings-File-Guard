@@ -114,4 +114,10 @@
 
 		<WriteLinesToFile File="$(ModJsonOutputPath)" Lines="@(ModJsonLines)" Overwrite="true" />
 	</Target>
+
+	<Target Name="RunModPostProcessor" AfterTargets="AfterBuild" Condition="'$(NeedBuild)' and '$(EnableCsiiPostProcessor)' == 'true'">
+		<Error Condition="!Exists('$(ModPostProcessorFullPath)')" Text="Post processor not found, please check the path: $(ModPostProcessorFullPath)" />
+		<Message Text="Run post processor: $(ModPostProcessorArgs)" Importance="high" />
+		<Exec Command="$(ModPostProcessorArgs)" LogStandardErrorAsError="true" />
+	</Target>
 </Project>
