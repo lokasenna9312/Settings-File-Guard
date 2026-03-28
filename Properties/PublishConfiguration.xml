@@ -1,9 +1,18 @@
 <Publish>
-	<!-- Leave ModId empty for the first PDX upload. Fill it after the first upload assigns the ModId. -->
 	<ModId Value="" />
 	<DisplayName Value="Settings File Guard" />
 	<ShortDescription Value="Protects Settings.coc against known keybinding-save corruption and preserves launcher continue metadata during shutdown." />
 	<LongDescription>
+## Language Info
+
+This mod supplies all 12 languages in Mod Option.
+
+이 모드는 모드 옵션에서 12개 언어를 모두 지원합니다.
+
+## English Introduction
+
+This mod is made Entirely by Vibe Coding, by Codex GPT 5.4 of Visual Studio Code.
+
 Settings File Guard is a lightweight utility mod for Cities: Skylines II.
 
 It is designed to reduce damage from the known global settings and keybinding save corruption that can break or wipe Settings.coc during shutdown.
@@ -28,6 +37,10 @@ Files created by this mod:
 - Healthy snapshots: Settings.coc.settings_file_guard.healthy.*.bak
 - Corrupt snapshots: Settings.coc.settings_guard.corrupt.*.bak
 - Continue target backup: continue_game.json.settings_file_guard.bak
+
+## 한국어 설명
+
+이 모드는 전적으로 Visual Studio Code의 Codex GPT 5.4를 이용한 Vibe Coding으로 제작됐습니다.
 
 이 모드는 Cities: Skylines II의 전역 설정 파일 Settings.coc를 보호하기 위한 경량 유틸리티 모드입니다.
 
