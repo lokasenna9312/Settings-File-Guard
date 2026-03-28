@@ -89,4 +89,12 @@ dotnet build "Settings File Guard.csproj"
 - `PublishNewVersion`: publish a new version after `ModId` has been assigned.
 - `UpdatePublishedConfiguration`: update already-published metadata/configuration without rebuilding the mod payload.
 - The project expects your Paradox account data at `.local\pdx_account.txt` through `PDXAccountDataPath`.
+- Expected local JSON template:
+```json
+{
+  "Email": "your-paradox-email@example.com",
+  "Password": "replace-with-your-paradox-password",
+  "NoAutoLogin": false
+}
+```
 - This project overrides `RunModPostProcessor` so normal Visual Studio build/publish no longer forces the CSII post-processor unless `EnableCsiiPostProcessor` is explicitly turned on.
