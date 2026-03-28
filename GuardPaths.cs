@@ -44,6 +44,8 @@ namespace Settings_File_Guard
 
         public static string LogsDirectoryPath => Path.Combine(SettingsDirectoryPath, "Logs");
 
+        public static string SavesDirectoryPath => Path.Combine(SettingsDirectoryPath, "Saves");
+
         private static string ResolveSettingsDirectoryPath()
         {
             if (!Environment.HasShutdownStarted)

@@ -30,6 +30,7 @@ namespace Settings_File_Guard
             ContinueGameProtectionService.InitializeSession();
             PreMainMenuContinueRetryService.InitializeSession();
             PreMainMenuContinueRetryService.AttachCallbacks(GameManager.instance);
+            PreMainMenuContinueRetryService.PrimeStartupIntent(GameManager.instance);
             ShutdownWriteTracker.Initialize();
             log.Info(nameof(OnLoad));
             LogLoadedBuildIdentity();

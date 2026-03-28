@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.RegularExpressions;
+using Colossal;
 
 namespace Settings_File_Guard
 {
@@ -187,6 +188,45 @@ namespace Settings_File_Guard
             }
         }
 
+        public static bool TryResolveCurrentContinueSaveGuid(out Hash128 guid, out string sourceDescription)
+        {
+            lock (s_Gate)
+            {
+                ContinueGameFileAnalysis analysis = AnalyzeContinueGameFile(GuardPaths.ContinueGameFilePath);
+                if (!analysis.LooksHealthy)
+                {
+                    analysis = EnsureHealthyBackupAnalysisLocked("resolve-guid");
+                }
+
+                if (!analysis.LooksHealthy)
+                {
+                    guid = default;
+                    sourceDescription = $"no-healthy-continue-metadata:{analysis.Reason}";
+                    return false;
+                }
+
+                if (!TryParseReasonableContinueGameDate(analysis.DateValue, out DateTime continueDateLocal))
+                {
+                    guid = default;
+                    sourceDescription = $"invalid-continue-date:{analysis.DateValue ?? "null"}";
+                    return false;
+                }
+
+                if (!TryResolveContinueSaveCandidate(analysis, continueDateLocal, out ContinueSaveCandidate candidate))
+                {
+                    guid = default;
+                    sourceDescription =
+                        $"no-matching-save:title={analysis.TitleValue ?? "null"}, date={analysis.DateValue ?? "null"}";
+                    return false;
+                }
+
+                guid = candidate.Guid;
+                sourceDescription =
+                    $"continue_game.json -> {candidate.SavePath} (guid={candidate.Guid}, deltaMs={candidate.DateDelta.TotalMilliseconds:0}, titleMatch={candidate.TitleMatched})";
+                return true;
+            }
+        }
+
         private static void CaptureHealthyContinueGameLocked(string reason, bool logMissing)
         {
             ContinueGameFileAnalysis analysis = AnalyzeContinueGameFile(GuardPaths.ContinueGameFilePath);
@@ -281,7 +321,10 @@ namespace Settings_File_Guard
                 analysis.HasDescription = !string.IsNullOrWhiteSpace(descriptionValue);
                 analysis.HasDate = !string.IsNullOrWhiteSpace(dateValue);
                 analysis.HasRawGameVersion = !string.IsNullOrWhiteSpace(rawGameVersionValue);
+                analysis.TitleValue = titleValue ?? string.Empty;
+                analysis.DescriptionValue = descriptionValue ?? string.Empty;
                 analysis.DateValue = dateValue ?? string.Empty;
+                analysis.RawGameVersionValue = rawGameVersionValue ?? string.Empty;
                 analysis.DateLooksPlausible =
                     analysis.HasDate &&
                     TryParseReasonableContinueGameDate(dateValue, out _);
@@ -360,6 +403,99 @@ namespace Settings_File_Guard
         private static string DescribeFileState(string path)
         {
             return AnalyzeContinueGameFile(path).Describe();
+        }
+
+        private static bool TryResolveContinueSaveCandidate(
+            ContinueGameFileAnalysis analysis,
+            DateTime continueDateLocal,
+            out ContinueSaveCandidate bestCandidate)
+        {
+            bestCandidate = default;
+            if (!Directory.Exists(GuardPaths.SavesDirectoryPath))
+            {
+                return false;
+            }
+
+            string titleValue = analysis.TitleValue?.Trim();
+            bool found = false;
+
+            foreach (string cidPath in Directory.EnumerateFiles(GuardPaths.SavesDirectoryPath, "*.cok.cid", SearchOption.AllDirectories))
+            {
+                if (!TryReadContinueSaveCandidate(cidPath, titleValue, continueDateLocal, out ContinueSaveCandidate candidate))
+                {
+                    continue;
+                }
+
+                if (!found || IsBetterContinueSaveCandidate(candidate, bestCandidate))
+                {
+                    bestCandidate = candidate;
+                    found = true;
+                }
+            }
+
+            return found;
+        }
+
+        private static bool TryReadContinueSaveCandidate(
+            string cidPath,
+            string titleValue,
+            DateTime continueDateLocal,
+            out ContinueSaveCandidate candidate)
+        {
+            candidate = default;
+
+            try
+            {
+                string savePath = cidPath.EndsWith(".cid", StringComparison.OrdinalIgnoreCase)
+                    ? cidPath.Substring(0, cidPath.Length - 4)
+                    : cidPath;
+                if (!File.Exists(savePath))
+                {
+                    return false;
+                }
+
+                string cidText = File.ReadAllText(cidPath).Trim();
+                if (string.IsNullOrWhiteSpace(cidText) || !Hash128.TryParse(cidText, out Hash128 guid))
+                {
+                    return false;
+                }
+
+                FileInfo saveInfo = new FileInfo(savePath);
+                TimeSpan dateDelta = (saveInfo.LastWriteTime - continueDateLocal).Duration();
+                string saveName = Path.GetFileNameWithoutExtension(savePath);
+                bool titleMatched =
+                    !string.IsNullOrWhiteSpace(titleValue) &&
+                    saveName.IndexOf(titleValue, StringComparison.OrdinalIgnoreCase) >= 0;
+
+                candidate = new ContinueSaveCandidate(
+                    savePath,
+                    cidPath,
+                    guid,
+                    saveInfo.LastWriteTime,
+                    dateDelta,
+                    titleMatched);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsBetterContinueSaveCandidate(ContinueSaveCandidate candidate, ContinueSaveCandidate currentBest)
+        {
+            if (candidate.TitleMatched != currentBest.TitleMatched)
+            {
+                return candidate.TitleMatched;
+            }
+
+            int candidateDeltaComparison = candidate.DateDelta.CompareTo(currentBest.DateDelta);
+            if (candidateDeltaComparison != 0)
+            {
+                return candidateDeltaComparison < 0;
+            }
+
+            return candidate.LastWriteTimeLocal > currentBest.LastWriteTimeLocal;
         }
 
         private static ContinueGameFileAnalysis EnsureHealthyBackupAnalysisLocked(string reason)
@@ -580,6 +716,9 @@ namespace Settings_File_Guard
                 CanRepairDate = false;
                 LooksHealthy = false;
                 DateValue = string.Empty;
+                TitleValue = string.Empty;
+                DescriptionValue = string.Empty;
+                RawGameVersionValue = string.Empty;
                 TitleToken = null;
                 DescriptionToken = null;
                 DateToken = null;
@@ -618,6 +757,12 @@ namespace Settings_File_Guard
 
             public string DateValue { get; set; }
 
+            public string TitleValue { get; set; }
+
+            public string DescriptionValue { get; set; }
+
+            public string RawGameVersionValue { get; set; }
+
             public string TitleToken { get; set; }
 
             public string DescriptionToken { get; set; }
@@ -636,8 +781,39 @@ namespace Settings_File_Guard
                     $"file={FilePath}, exists={Exists}, length={Length}, startsWithObject={StartsWithJsonObject}, " +
                     $"endsWithObject={EndsWithJsonObject}, hasSeparator={HasJsonSeparator}, hasTitle={HasTitle}, hasDescription={HasDescription}, " +
                     $"hasDate={HasDate}, dateLooksPlausible={DateLooksPlausible}, hasRawGameVersion={HasRawGameVersion}, canRepairDate={CanRepairDate}, " +
-                    $"healthy={LooksHealthy}, reason={Reason}, dateValue={DateValue ?? "null"}, lastWriteUtc={LastWriteTimeUtc:O}";
+                    $"healthy={LooksHealthy}, reason={Reason}, titleValue={TitleValue ?? "null"}, dateValue={DateValue ?? "null"}, lastWriteUtc={LastWriteTimeUtc:O}";
             }
+        }
+
+        private readonly struct ContinueSaveCandidate
+        {
+            public ContinueSaveCandidate(
+                string savePath,
+                string cidPath,
+                Hash128 guid,
+                DateTime lastWriteTimeLocal,
+                TimeSpan dateDelta,
+                bool titleMatched)
+            {
+                SavePath = savePath;
+                CidPath = cidPath;
+                Guid = guid;
+                LastWriteTimeLocal = lastWriteTimeLocal;
+                DateDelta = dateDelta;
+                TitleMatched = titleMatched;
+            }
+
+            public string SavePath { get; }
+
+            public string CidPath { get; }
+
+            public Hash128 Guid { get; }
+
+            public DateTime LastWriteTimeLocal { get; }
+
+            public TimeSpan DateDelta { get; }
+
+            public bool TitleMatched { get; }
         }
     }
 }
