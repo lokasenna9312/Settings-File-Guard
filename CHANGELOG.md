@@ -37,6 +37,7 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 
 ### Fixed
 
+- Disabled the experimental pre-main-menu launcher-continue retry path after it proved ineffective in this environment and started provoking `MenuUISystem.ExitToMainMenu()` null-reference failures during launcher startup.
 - Tightened `continue_game.json` health validation so semantically broken metadata, including implausible `1970-01-01` timestamps, no longer counts as healthy just because the file still looks like JSON.
 - Added timestamp normalization for repairable `continue_game.json` files so backup and restore flows can rewrite the `date` field from the file's last-write time instead of preserving clearly invalid launcher metadata.
 - Changed the startup continue retry success criterion to `onWorldReady` instead of trusting `Load()` task completion alone, so menu fallbacks after a superficially successful load can still stay inside the pre-main-menu retry gate.

@@ -28,9 +28,6 @@ namespace Settings_File_Guard
             m_Setting.RegisterInOptionsUI();
             GuardDiagnostics.Initialize();
             ContinueGameProtectionService.InitializeSession();
-            PreMainMenuContinueRetryService.InitializeSession();
-            PreMainMenuContinueRetryService.AttachCallbacks(GameManager.instance);
-            PreMainMenuContinueRetryService.PrimeStartupIntent(GameManager.instance);
             ShutdownWriteTracker.Initialize();
             log.Info(nameof(OnLoad));
             LogLoadedBuildIdentity();
@@ -46,7 +43,6 @@ namespace Settings_File_Guard
             SettingsSaveTracePatches.Apply();
             AssetDatabaseSettingsTracePatches.Apply();
             SettingsFileIoTracePatches.Apply();
-            PreMainMenuContinueRetryPatches.Apply();
             KeybindingPersistenceGuardPatches.CaptureCurrentBindings();
             SettingsFileProtectionService.BackupHealthySettingsFile("post-load baseline");
             GuardDiagnostics.DumpFileSnapshot(
