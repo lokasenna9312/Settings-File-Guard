@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 
 namespace Settings_File_Guard
 {
@@ -7,6 +8,11 @@ namespace Settings_File_Guard
     {
         private const string BackupFileName = "continue_game.json.settings_file_guard.bak";
         private const long MinimumHealthyFileLengthBytes = 16;
+        private static readonly DateTime MinimumReasonableContinueGameDateLocal = new DateTime(2023, 1, 1, 0, 0, 0, DateTimeKind.Local);
+        private static readonly Regex TitleRegex = CreateJsonStringPropertyRegex("title");
+        private static readonly Regex DescriptionRegex = CreateJsonStringPropertyRegex("desc");
+        private static readonly Regex DateRegex = CreateJsonStringPropertyRegex("date");
+        private static readonly Regex RawGameVersionRegex = CreateJsonStringPropertyRegex("rawGameVersion");
 
         private static readonly object s_Gate = new object();
 
@@ -110,17 +116,29 @@ namespace Settings_File_Guard
 
                 if (currentAnalysis.Exists)
                 {
+                    if (TryRepairContinueGameInPlace(
+                            GuardPaths.ContinueGameFilePath,
+                            currentAnalysis,
+                            reason,
+                            isTerminalPhase,
+                            "current"))
+                    {
+                        s_DeletedDuringShutdown = false;
+                        s_LoggedMissingBackupAfterDeletion = false;
+                    }
+
                     return;
                 }
 
-                if (!File.Exists(BackupFilePath))
+                ContinueGameFileAnalysis backupAnalysis = EnsureHealthyBackupAnalysisLocked(reason);
+                if (!backupAnalysis.LooksHealthy)
                 {
                     if (!s_LoggedMissingBackupAfterDeletion)
                     {
                         s_LoggedMissingBackupAfterDeletion = true;
                         string missingBackupMessage =
                             "[CONTINUE_GAME] Unable to restore continue_game.json because no healthy backup is available. " +
-                            $"reason={reason}, current={currentAnalysis.Describe()}, lastHealthy={s_LastHealthyDescription}";
+                            $"reason={reason}, current={currentAnalysis.Describe()}, backup={backupAnalysis.Describe()}, lastHealthy={s_LastHealthyDescription}";
                         Mod.log.Warn(missingBackupMessage);
                         GuardDiagnostics.WriteEvent("CONTINUE_GAME", missingBackupMessage);
                     }
@@ -172,6 +190,16 @@ namespace Settings_File_Guard
         private static void CaptureHealthyContinueGameLocked(string reason, bool logMissing)
         {
             ContinueGameFileAnalysis analysis = AnalyzeContinueGameFile(GuardPaths.ContinueGameFilePath);
+            if (!analysis.LooksHealthy && analysis.CanRepairDate)
+            {
+                analysis = WriteRepairedContinueGameFile(
+                    BackupFilePath,
+                    analysis,
+                    $"capture-repair:{reason}",
+                    "backup",
+                    logAsWarning: false);
+            }
+
             if (!analysis.LooksHealthy)
             {
                 if (logMissing)
@@ -189,12 +217,20 @@ namespace Settings_File_Guard
             try
             {
                 Directory.CreateDirectory(GuardPaths.SettingsDirectoryPath);
-                File.Copy(GuardPaths.ContinueGameFilePath, BackupFilePath, overwrite: true);
-                s_LastHealthyDescription = analysis.Describe();
+                if (string.Equals(analysis.FilePath, BackupFilePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    s_LastHealthyDescription = analysis.Describe();
+                }
+                else
+                {
+                    File.Copy(GuardPaths.ContinueGameFilePath, BackupFilePath, overwrite: true);
+                    analysis = AnalyzeContinueGameFile(BackupFilePath);
+                    s_LastHealthyDescription = analysis.Describe();
+                }
 
                 string message =
                     "[CONTINUE_GAME] Captured healthy continue_game.json backup. " +
-                    $"reason={reason}, current={analysis.Describe()}, backup={DescribeFileState(BackupFilePath)}";
+                    $"reason={reason}, current={DescribeFileState(GuardPaths.ContinueGameFilePath)}, backup={DescribeFileState(BackupFilePath)}";
                 Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("CONTINUE_GAME", message);
             }
@@ -237,12 +273,50 @@ namespace Settings_File_Guard
                 analysis.StartsWithJsonObject = trimmed.StartsWith("{", StringComparison.Ordinal);
                 analysis.EndsWithJsonObject = trimmed.EndsWith("}", StringComparison.Ordinal);
                 analysis.HasJsonSeparator = trimmed.IndexOf(':') >= 0;
+                analysis.TitleToken = TryExtractJsonStringToken(trimmed, TitleRegex, out string titleValue);
+                analysis.DescriptionToken = TryExtractJsonStringToken(trimmed, DescriptionRegex, out string descriptionValue);
+                analysis.DateToken = TryExtractJsonStringToken(trimmed, DateRegex, out string dateValue);
+                analysis.RawGameVersionToken = TryExtractJsonStringToken(trimmed, RawGameVersionRegex, out string rawGameVersionValue);
+                analysis.HasTitle = !string.IsNullOrWhiteSpace(titleValue);
+                analysis.HasDescription = !string.IsNullOrWhiteSpace(descriptionValue);
+                analysis.HasDate = !string.IsNullOrWhiteSpace(dateValue);
+                analysis.HasRawGameVersion = !string.IsNullOrWhiteSpace(rawGameVersionValue);
+                analysis.DateValue = dateValue ?? string.Empty;
+                analysis.DateLooksPlausible =
+                    analysis.HasDate &&
+                    TryParseReasonableContinueGameDate(dateValue, out _);
                 analysis.LooksHealthy =
                     analysis.Length >= MinimumHealthyFileLengthBytes &&
                     analysis.StartsWithJsonObject &&
                     analysis.EndsWithJsonObject &&
-                    analysis.HasJsonSeparator;
-                analysis.Reason = analysis.LooksHealthy ? "healthy" : "invalid-json-shape";
+                    analysis.HasJsonSeparator &&
+                    analysis.HasTitle &&
+                    analysis.HasDescription &&
+                    analysis.HasDate &&
+                    analysis.HasRawGameVersion &&
+                    analysis.DateLooksPlausible;
+
+                analysis.CanRepairDate =
+                    analysis.Length >= MinimumHealthyFileLengthBytes &&
+                    analysis.StartsWithJsonObject &&
+                    analysis.EndsWithJsonObject &&
+                    analysis.HasJsonSeparator &&
+                    analysis.HasTitle &&
+                    analysis.HasDescription &&
+                    analysis.HasRawGameVersion &&
+                    !analysis.DateLooksPlausible &&
+                    info.LastWriteTime != DateTime.MinValue;
+
+                if (analysis.CanRepairDate)
+                {
+                    analysis.RepairedContent = BuildNormalizedContinueGameJson(
+                        analysis.TitleToken,
+                        analysis.DescriptionToken,
+                        info.LastWriteTime,
+                        analysis.RawGameVersionToken);
+                }
+
+                analysis.Reason = GetContinueGameHealthReason(analysis);
             }
             catch (Exception ex)
             {
@@ -288,6 +362,203 @@ namespace Settings_File_Guard
             return AnalyzeContinueGameFile(path).Describe();
         }
 
+        private static ContinueGameFileAnalysis EnsureHealthyBackupAnalysisLocked(string reason)
+        {
+            ContinueGameFileAnalysis backupAnalysis = AnalyzeContinueGameFile(BackupFilePath);
+            if (!backupAnalysis.LooksHealthy && backupAnalysis.CanRepairDate)
+            {
+                backupAnalysis = WriteRepairedContinueGameFile(
+                    BackupFilePath,
+                    backupAnalysis,
+                    $"backup-repair:{reason}",
+                    "backup",
+                    logAsWarning: true);
+            }
+
+            return backupAnalysis;
+        }
+
+        private static bool TryRepairContinueGameInPlace(
+            string targetPath,
+            ContinueGameFileAnalysis analysis,
+            string reason,
+            bool isTerminalPhase,
+            string targetLabel)
+        {
+            if (!analysis.CanRepairDate)
+            {
+                return false;
+            }
+
+            ContinueGameFileAnalysis repairedAnalysis = WriteRepairedContinueGameFile(
+                targetPath,
+                analysis,
+                $"repair:{reason}",
+                targetLabel,
+                logAsWarning: true);
+            if (!repairedAnalysis.LooksHealthy)
+            {
+                return false;
+            }
+
+            string repairedMessage =
+                "[CONTINUE_GAME] Repaired continue_game.json with a normalized timestamp. " +
+                $"reason={reason}, terminalPhase={isTerminalPhase}, target={targetLabel}, repaired={repairedAnalysis.Describe()}";
+            Mod.log.Warn(repairedMessage);
+            GuardDiagnostics.WriteEvent("CONTINUE_GAME", repairedMessage);
+            return true;
+        }
+
+        private static ContinueGameFileAnalysis WriteRepairedContinueGameFile(
+            string targetPath,
+            ContinueGameFileAnalysis sourceAnalysis,
+            string reason,
+            string targetLabel,
+            bool logAsWarning)
+        {
+            if (!sourceAnalysis.CanRepairDate || string.IsNullOrWhiteSpace(sourceAnalysis.RepairedContent))
+            {
+                return sourceAnalysis;
+            }
+
+            try
+            {
+                string directory = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                File.WriteAllText(targetPath, sourceAnalysis.RepairedContent);
+                ContinueGameFileAnalysis repairedAnalysis = AnalyzeContinueGameFile(targetPath);
+                string repairedMessage =
+                    "[CONTINUE_GAME] Wrote repaired continue_game metadata with a normalized timestamp. " +
+                    $"reason={reason}, target={targetLabel}, source={sourceAnalysis.Describe()}, repaired={repairedAnalysis.Describe()}";
+                if (logAsWarning)
+                {
+                    Mod.log.Warn(repairedMessage);
+                }
+                else
+                {
+                    Mod.log.Info(repairedMessage);
+                }
+
+                GuardDiagnostics.WriteEvent("CONTINUE_GAME", repairedMessage);
+                return repairedAnalysis;
+            }
+            catch (IOException ex) when (SettingsFileProtectionService.IsSharingViolation(ex))
+            {
+                string deferredMessage =
+                    "[CONTINUE_GAME] Deferred continue_game repair because the file is still locked. " +
+                    $"reason={reason}, target={targetLabel}, exception={ex.Message}";
+                Mod.log.Warn(deferredMessage);
+                GuardDiagnostics.WriteEvent("CONTINUE_GAME", deferredMessage);
+            }
+            catch (Exception ex)
+            {
+                string failureMessage =
+                    "[CONTINUE_GAME] Failed to repair continue_game metadata. " +
+                    $"reason={reason}, target={targetLabel}, exception={ex}";
+                Mod.log.Error(ex, failureMessage);
+                GuardDiagnostics.WriteEvent("CONTINUE_GAME", failureMessage);
+            }
+
+            return sourceAnalysis;
+        }
+
+        private static string BuildNormalizedContinueGameJson(
+            string titleToken,
+            string descriptionToken,
+            DateTime lastWriteTimeLocal,
+            string rawGameVersionToken)
+        {
+            return
+                "{\n" +
+                $"    \"title\": {titleToken},\n" +
+                $"    \"desc\": {descriptionToken},\n" +
+                $"    \"date\": \"{lastWriteTimeLocal:yyyy-MM-ddTHH:mm:ss}\",\n" +
+                $"    \"rawGameVersion\": {rawGameVersionToken}\n" +
+                "}\n";
+        }
+
+        private static string GetContinueGameHealthReason(ContinueGameFileAnalysis analysis)
+        {
+            if (analysis.LooksHealthy)
+            {
+                return "healthy";
+            }
+
+            if (!analysis.StartsWithJsonObject || !analysis.EndsWithJsonObject || !analysis.HasJsonSeparator)
+            {
+                return "invalid-json-shape";
+            }
+
+            if (!analysis.HasTitle || !analysis.HasDescription || !analysis.HasRawGameVersion)
+            {
+                return "missing-required-fields";
+            }
+
+            if (!analysis.HasDate)
+            {
+                return analysis.CanRepairDate ? "missing-date-repairable" : "missing-date";
+            }
+
+            if (!analysis.DateLooksPlausible)
+            {
+                return analysis.CanRepairDate ? "implausible-date-repairable" : "implausible-date";
+            }
+
+            return "invalid-json-content";
+        }
+
+        private static string TryExtractJsonStringToken(string text, Regex regex, out string value)
+        {
+            value = null;
+            if (string.IsNullOrEmpty(text))
+            {
+                return null;
+            }
+
+            Match match = regex.Match(text);
+            if (!match.Success)
+            {
+                return null;
+            }
+
+            value = match.Groups["value"].Value;
+            return match.Groups["token"].Value;
+        }
+
+        private static bool TryParseReasonableContinueGameDate(string value, out DateTime parsedLocal)
+        {
+            parsedLocal = DateTime.MinValue;
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            if (!DateTime.TryParse(value, out parsedLocal))
+            {
+                return false;
+            }
+
+            if (parsedLocal.Kind == DateTimeKind.Utc)
+            {
+                parsedLocal = parsedLocal.ToLocalTime();
+            }
+
+            return
+                parsedLocal >= MinimumReasonableContinueGameDateLocal &&
+                parsedLocal <= DateTime.Now.AddYears(1);
+        }
+
+        private static Regex CreateJsonStringPropertyRegex(string propertyName)
+        {
+            return new Regex(
+                $"\\\"{Regex.Escape(propertyName)}\\\"\\s*:\\s*(?<token>\\\"(?<value>(?:\\\\.|[^\\\"])*)\\\")",
+                RegexOptions.Compiled | RegexOptions.CultureInvariant);
+        }
+
         private static string BackupFilePath => Path.Combine(GuardPaths.SettingsDirectoryPath, BackupFileName);
 
         private struct ContinueGameFileAnalysis
@@ -301,7 +572,19 @@ namespace Settings_File_Guard
                 StartsWithJsonObject = false;
                 EndsWithJsonObject = false;
                 HasJsonSeparator = false;
+                HasTitle = false;
+                HasDescription = false;
+                HasDate = false;
+                HasRawGameVersion = false;
+                DateLooksPlausible = false;
+                CanRepairDate = false;
                 LooksHealthy = false;
+                DateValue = string.Empty;
+                TitleToken = null;
+                DescriptionToken = null;
+                DateToken = null;
+                RawGameVersionToken = null;
+                RepairedContent = null;
                 Reason = "unknown";
             }
 
@@ -319,7 +602,31 @@ namespace Settings_File_Guard
 
             public bool HasJsonSeparator { get; set; }
 
+            public bool HasTitle { get; set; }
+
+            public bool HasDescription { get; set; }
+
+            public bool HasDate { get; set; }
+
+            public bool HasRawGameVersion { get; set; }
+
+            public bool DateLooksPlausible { get; set; }
+
+            public bool CanRepairDate { get; set; }
+
             public bool LooksHealthy { get; set; }
+
+            public string DateValue { get; set; }
+
+            public string TitleToken { get; set; }
+
+            public string DescriptionToken { get; set; }
+
+            public string DateToken { get; set; }
+
+            public string RawGameVersionToken { get; set; }
+
+            public string RepairedContent { get; set; }
 
             public string Reason { get; set; }
 
@@ -327,7 +634,9 @@ namespace Settings_File_Guard
             {
                 return
                     $"file={FilePath}, exists={Exists}, length={Length}, startsWithObject={StartsWithJsonObject}, " +
-                    $"endsWithObject={EndsWithJsonObject}, hasSeparator={HasJsonSeparator}, healthy={LooksHealthy}, reason={Reason}, lastWriteUtc={LastWriteTimeUtc:O}";
+                    $"endsWithObject={EndsWithJsonObject}, hasSeparator={HasJsonSeparator}, hasTitle={HasTitle}, hasDescription={HasDescription}, " +
+                    $"hasDate={HasDate}, dateLooksPlausible={DateLooksPlausible}, hasRawGameVersion={HasRawGameVersion}, canRepairDate={CanRepairDate}, " +
+                    $"healthy={LooksHealthy}, reason={Reason}, dateValue={DateValue ?? "null"}, lastWriteUtc={LastWriteTimeUtc:O}";
             }
         }
     }
