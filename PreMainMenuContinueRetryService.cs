@@ -20,6 +20,7 @@ namespace Settings_File_Guard
         private static bool s_StartupLoadObserved;
         private static bool s_StartupLoadFailed;
         private static bool s_LoadCompletedSuccessfully;
+        private static bool s_WaitingForWorldReady;
         private static bool s_RetryInProgress;
         private static bool s_IssuingRetryLoad;
         private static DateTime s_SessionStartedUtc;
@@ -39,6 +40,7 @@ namespace Settings_File_Guard
                 s_StartupLoadObserved = false;
                 s_StartupLoadFailed = false;
                 s_LoadCompletedSuccessfully = false;
+                s_WaitingForWorldReady = false;
                 s_RetryInProgress = false;
                 s_IssuingRetryLoad = false;
                 s_SessionStartedUtc = DateTime.UtcNow;
@@ -58,7 +60,7 @@ namespace Settings_File_Guard
 
         public static void RecordLoadGuid(GameMode mode, Purpose purpose, Hash128 guid, string source)
         {
-            if (!IsTrackedLoad(mode, purpose) || IsDefaultGuid(guid))
+            if (!IsTrackedLoad(mode, purpose))
             {
                 return;
             }
@@ -71,13 +73,31 @@ namespace Settings_File_Guard
                 }
 
                 s_StartupLoadObserved = true;
-                s_TargetGuid = guid;
-                s_TargetSource = source ?? "unknown";
-                s_TargetSummary = guid.ToString();
+                s_MainMenuReached = false;
+                s_StartupLoadFailed = false;
+                s_LoadCompletedSuccessfully = false;
+                s_WaitingForWorldReady = false;
+                s_FirstFailureUtc = DateTime.MinValue;
+                s_LastRetryAttemptUtc = DateTime.MinValue;
+                s_RetryAttemptCount = 0;
 
-                string message =
-                    "[CONTINUE_RETRY] Observed startup save-load target. " +
-                    $"source={s_TargetSource}, guid={s_TargetSummary}, state={DescribeStateLocked()}";
+                bool hasGuid = !IsDefaultGuid(guid);
+                if (hasGuid)
+                {
+                    s_TargetGuid = guid;
+                    s_TargetSource = source ?? "unknown";
+                    s_TargetSummary = guid.ToString();
+                }
+                else if (string.Equals(s_TargetSource, "none", StringComparison.Ordinal))
+                {
+                    s_TargetSource = source ?? "unknown";
+                }
+
+                string message = hasGuid
+                    ? "[CONTINUE_RETRY] Observed startup save-load target. " +
+                      $"source={s_TargetSource}, guid={s_TargetSummary}, state={DescribeStateLocked()}"
+                    : "[CONTINUE_RETRY] Observed a startup save-load attempt without a concrete guid. " +
+                      $"source={source ?? "unknown"}, state={DescribeStateLocked()}";
                 Mod.log.Info(message);
                 GuardDiagnostics.WriteEvent("CONTINUE_RETRY", message);
             }
@@ -149,6 +169,18 @@ namespace Settings_File_Guard
                     return false;
                 }
 
+                if (!s_StartupLoadObserved || s_LoadCompletedSuccessfully)
+                {
+                    return false;
+                }
+
+                if (s_FirstFailureUtc == DateTime.MinValue)
+                {
+                    s_FirstFailureUtc = DateTime.UtcNow;
+                }
+
+                s_StartupLoadFailed = true;
+
                 if (!CanRetryBeforeMainMenuLocked(DateTime.UtcNow))
                 {
                     if (ShouldLogRetryExhaustedLocked())
@@ -213,7 +245,22 @@ namespace Settings_File_Guard
         {
             lock (s_Gate)
             {
+                bool reachedAfterTrackedLoad =
+                    IsTrackedLoad(mode, purpose) &&
+                    s_StartupLoadObserved &&
+                    !s_LoadCompletedSuccessfully;
+
                 s_MainMenuReached = true;
+
+                if (reachedAfterTrackedLoad)
+                {
+                    s_StartupLoadFailed = true;
+                    if (s_FirstFailureUtc == DateTime.MinValue)
+                    {
+                        s_FirstFailureUtc = DateTime.UtcNow;
+                    }
+                }
+
                 string message =
                     "[CONTINUE_RETRY] Main menu was reached. " +
                     $"source={source}, purpose={purpose}, mode={mode}, state={DescribeStateLocked()}";
@@ -236,6 +283,7 @@ namespace Settings_File_Guard
                 if (success)
                 {
                     s_RetryInProgress = false;
+                    s_WaitingForWorldReady = true;
 
                     string successMessage =
                         "[CONTINUE_RETRY] Save-load task completed successfully; waiting for world readiness confirmation. " +
@@ -249,6 +297,7 @@ namespace Settings_File_Guard
                 {
                     s_RetryInProgress = false;
                     s_StartupLoadFailed = true;
+                    s_WaitingForWorldReady = false;
                     if (s_FirstFailureUtc == DateTime.MinValue)
                     {
                         s_FirstFailureUtc = DateTime.UtcNow;
@@ -259,6 +308,7 @@ namespace Settings_File_Guard
                 else if (s_StartupLoadObserved && !s_LoadCompletedSuccessfully && !s_MainMenuReached)
                 {
                     s_StartupLoadFailed = true;
+                    s_WaitingForWorldReady = false;
                     if (s_FirstFailureUtc == DateTime.MinValue)
                     {
                         s_FirstFailureUtc = DateTime.UtcNow;
@@ -301,8 +351,6 @@ namespace Settings_File_Guard
         {
             return
                 s_SessionInitialized &&
-                !s_MainMenuReached &&
-                !s_LoadCompletedSuccessfully &&
                 !s_IssuingRetryLoad &&
                 DateTime.UtcNow - s_SessionStartedUtc <= StartupTrackingWindow;
         }
@@ -310,7 +358,6 @@ namespace Settings_File_Guard
         private static bool CanRetryBeforeMainMenuLocked(DateTime nowUtc)
         {
             if (!s_StartupLoadObserved ||
-                !s_StartupLoadFailed ||
                 s_LoadCompletedSuccessfully ||
                 s_MainMenuReached ||
                 s_RetryInProgress ||
@@ -372,7 +419,7 @@ namespace Settings_File_Guard
         {
             return
                 $"mainMenuReached={s_MainMenuReached}, startupLoadObserved={s_StartupLoadObserved}, startupLoadFailed={s_StartupLoadFailed}, " +
-                $"loadCompletedSuccessfully={s_LoadCompletedSuccessfully}, retryAttemptCount={s_RetryAttemptCount}, retryInProgress={s_RetryInProgress}, " +
+                $"loadCompletedSuccessfully={s_LoadCompletedSuccessfully}, waitingForWorldReady={s_WaitingForWorldReady}, retryAttemptCount={s_RetryAttemptCount}, retryInProgress={s_RetryInProgress}, " +
                 $"firstFailureUtc={(s_FirstFailureUtc == DateTime.MinValue ? "none" : s_FirstFailureUtc.ToString("O"))}, " +
                 $"target={s_TargetSummary}, targetSource={s_TargetSource}";
         }
@@ -386,8 +433,19 @@ namespace Settings_File_Guard
                     return;
                 }
 
+                if (!s_WaitingForWorldReady && !s_RetryInProgress && !s_StartupLoadObserved)
+                {
+                    string ignoredMessage =
+                        "[CONTINUE_RETRY] Ignored world-ready callback because there is no tracked startup save-load in flight. " +
+                        $"state={DescribeStateLocked()}";
+                    Mod.log.Info(ignoredMessage);
+                    GuardDiagnostics.WriteEvent("CONTINUE_RETRY", ignoredMessage);
+                    return;
+                }
+
                 s_LoadCompletedSuccessfully = true;
                 s_StartupLoadFailed = false;
+                s_WaitingForWorldReady = false;
                 s_RetryInProgress = false;
 
                 string successMessage =
