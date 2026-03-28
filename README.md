@@ -11,6 +11,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 - Restores the strongest healthy backup candidate on startup only when the current `Settings.coc` hits a hard corruption threshold.
 - Preserves the broken file as a timestamped corrupt snapshot before restore.
 - Captures a best-effort backup of `continue_game.json` and restores it during shutdown if the launcher continue target disappears after being valid earlier in the session.
+- If the launcher `Continue` startup load fails before the main menu is shown, retries that same save target during the pre-main-menu unwind window instead of immediately dropping to the menu.
 - Emits detailed file-health diagnostics to `Settings_File_Guard.Mod.log` so backup and restore decisions are explainable after the fact.
 - Supports optional deep diagnostics via the mod options UI for session logs and `Settings.coc` snapshots around restore and fallback events.
 - Uses conservative recovery by default: weaker-but-still-parseable files are preserved for diagnosis instead of being aggressively replaced.
@@ -22,6 +23,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 - 시작 시 현재 `Settings.coc`가 하드 손상 기준에 걸릴 때만 가장 강한 건강 백업 후보로 복원합니다.
 - 복원 전에 손상된 파일을 타임스탬프가 붙은 스냅샷으로 남깁니다.
 - 세션 중 정상으로 보였던 `continue_game.json`을 best-effort로 백업해 두고, 종료 중 런처 이어하기 대상이 사라지면 복원합니다.
+- 런처 `다시 하기` 시작 로드가 메인 메뉴를 보여주기 전에 실패하면, 같은 세이브 대상을 pre-main-menu 구간에서 다시 시도하고 바로 메뉴로 떨어지는 것을 최대한 막습니다.
 - 백업/복원 판단 근거가 보이도록 상세 진단 로그를 남깁니다.
 - 모드 옵션에서 deep diagnostics를 켜면 복구/우회 시점의 세션 로그와 `Settings.coc` 스냅샷을 남길 수 있습니다.
 - 기본 복구 정책은 보수적이며, 약하지만 아직 읽을 수 있는 파일은 자동 교체보다 진단을 우선합니다.
@@ -30,6 +32,7 @@ Settings File Guard is a standalone Cities: Skylines II utility mod that protect
 
 - It cannot protect sessions where **all code mods are disabled**, because this utility itself is a code mod.
 - It protects `Settings.coc` plus the launcher continue-target metadata file `continue_game.json`, but it does not modify actual `.cok` savegame contents.
+- The startup continue retry only applies before the main menu is shown and is bounded to a short retry window; once normal menu flow is allowed, the mod does not auto-load from the menu afterward.
 - It cannot restore anything until a healthy backup has been created at least once.
 - The diagnostic log helps explain failures, but it is not itself a restorable source of keybindings. Actual recovery still depends on healthy backups or snapshots.
 - Conservative recovery may intentionally leave a suspicious but still parseable `Settings.coc` in place so that evidence is preserved for diagnosis.

@@ -30,6 +30,11 @@ Historical commits before `2026-03-27` were not backfilled into this file.
 
 ## 2026-03-28
 
+### Added
+
+- Added a pre-main-menu launcher continue retry path that captures the startup `LoadGame` target and replays it during the unwind before the normal main menu appears.
+- Expanded that retry path into a short bounded retry window so repeated startup load failures can keep retrying the same save target until the menu flow is finally allowed through.
+
 ### Fixed
 
 - Tightened `continue_game.json` health validation so semantically broken metadata, including implausible `1970-01-01` timestamps, no longer counts as healthy just because the file still looks like JSON.
